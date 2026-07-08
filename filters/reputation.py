@@ -47,7 +47,8 @@ async def get_goplus_access_token() -> Optional[str]:
     (GoPlus يرجع مدة صلاحية expires_in بالثواني ضمن الاستجابة).
     """
     if not GOPLUS_APP_KEY or not GOPLUS_APP_SECRET:
-        return None  # لا مفتاح متوفر — سيعمل الاستعلام بدون توكن بحد مجاني أساسي
+        logger.warning("GOPLUS_APP_KEY أو GOPLUS_APP_SECRET غير موجودين في البيئة")
+        return None
 
     now = int(time.time())
     if _token_cache["access_token"] and now < _token_cache["expires_at"] - 60:
@@ -62,8 +63,11 @@ async def get_goplus_access_token() -> Optional[str]:
     async with aiohttp.ClientSession() as session:
         try:
             async with session.post(url, json=payload, timeout=10) as resp:
+                raw_text = await resp.text()
                 if resp.status != 200:
-                    logger.warning(f"فشل الحصول على GoPlus access token: status {resp.status}")
+                    logger.warning(
+                        f"فشل الحصول على GoPlus access token: status {resp.status} — {raw_text[:300]}"
+                    )
                     return None
                 data = await resp.json()
                 result = data.get("result", {})
@@ -72,10 +76,12 @@ async def get_goplus_access_token() -> Optional[str]:
                 if token:
                     _token_cache["access_token"] = token
                     _token_cache["expires_at"] = now + int(expires_in)
-                    logger.info("تم الحصول على GoPlus access token جديد")
+                    logger.info(f"تم الحصول على GoPlus access token جديد (ينتهي خلال {expires_in}s)")
+                else:
+                    logger.warning(f"استجابة GoPlus /token لا تحتوي access_token: {data}")
                 return token
         except Exception as e:
-            logger.warning(f"خطأ أثناء طلب GoPlus access token: {e}")
+            logger.warning(f"خطأ أثناء طلب GoPlus access token: {type(e).__name__}: {e}")
             return None
 
 
@@ -137,6 +143,8 @@ async def check_goplus_security(mint_address: str) -> Optional[GoPlusResult]:
     access_token = await get_goplus_access_token()
     if access_token:
         headers["Authorization"] = f"Bearer {access_token}"
+    else:
+        logger.warning("لم يُستخدم أي access_token في طلب GoPlus (المصادقة فشلت أو غير متوفرة)")
 
     async with aiohttp.ClientSession() as session:
         try:
@@ -144,8 +152,11 @@ async def check_goplus_security(mint_address: str) -> Optional[GoPlusResult]:
                 url, params={"contract_addresses": mint_address},
                 headers=headers, timeout=10,
             ) as resp:
+                raw_text = await resp.text()
                 if resp.status != 200:
-                    logger.warning(f"GoPlus رجع status {resp.status} لعملة {mint_address}")
+                    logger.warning(
+                        f"GoPlus رجع status {resp.status} لعملة {mint_address}: {raw_text[:300]}"
+                    )
                     return None
                 data = await resp.json()
                 result_dict = data.get("result", {})
@@ -161,7 +172,7 @@ async def check_goplus_security(mint_address: str) -> Optional[GoPlusResult]:
                 if not token_data:
                     logger.warning(
                         f"GoPlus لم يُرجع بيانات لعملة {mint_address} — "
-                        f"المفاتيح المُرجعة فعلياً: {list(result_dict.keys())}"
+                        f"الاستجابة الخام الكاملة: {raw_text[:500]}"
                     )
                     return None
                 return _parse_goplus_response(token_data)
