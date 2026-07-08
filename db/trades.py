@@ -138,3 +138,17 @@ def get_open_trades(db_path: str = DB_PATH):
     rows = conn.execute("SELECT * FROM trades WHERE status = 'open'").fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def has_seen_mint_before(mint_address: str, db_path: str = DB_PATH) -> bool:
+    """
+    يفحص إن كانت هذه العملة ظهرت من قبل في trades (أي حالة: مفتوحة أو مغلقة)
+    — يُستخدم لمنع "نسيان" العملات المرفوضة أو المُتاجَر بها سابقاً عند إعادة
+    فحصها بالخطأ (مثلاً بسبب إعادة تشغيل البوت أو تكرار حدث من الشبكة).
+    """
+    conn = sqlite3.connect(db_path)
+    row = conn.execute(
+        "SELECT 1 FROM trades WHERE mint_address = ? LIMIT 1", (mint_address,)
+    ).fetchone()
+    conn.close()
+    return row is not None
