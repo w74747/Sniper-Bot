@@ -1,7 +1,7 @@
 """
 الاستماع لأحداث إطلاق سيولة جديدة (تهيئة pool جديد على Raydium/Pump.fun)
-عبر Helius WebSocket (Geyser/Enhanced Websockets)، ثم تشغيل كل الفلاتر
-بالترتيب: كلمات محظورة → on-chain → سمعة/RugCheck → محاكاة بيع.
+عبر Alchemy WebSocket، ثم تشغيل كل الفلاتر
+بالترتيب: كلمات محظورة → on-chain → سمعة/GoPlus → محاكاة بيع.
 
 عند اجتياز كل الفلاتر: إضافة العملة إلى watchlist (وليس شراء فوري) —
 حسب الاستراتيجية المتفق عليها.
@@ -12,7 +12,7 @@ import logging
 
 import websockets
 
-from config.settings import HELIUS_WS_URL, DEX_ALLOWLIST
+from config.settings import ALCHEMY_WS_URL, DEX_ALLOWLIST
 from filters.onchain_filters import TokenMetadata, run_all_onchain_filters
 from filters.reputation import evaluate_reputation
 from filters.sell_simulation import simulate_sell, evaluate_simulation_result
@@ -27,7 +27,7 @@ async def fetch_token_metadata(pool_event: dict) -> TokenMetadata:
     (getAccountInfo على mint address لقراءة mint_authority/freeze_authority،
     getTokenLargestAccounts لحساب التوزيع، إلخ).
     """
-    raise NotImplementedError("يحتاج ربطاً فعلياً بقراءة بيانات العقد عبر Helius RPC")
+    raise NotImplementedError("يحتاج ربطاً فعلياً بقراءة بيانات العقد عبر Alchemy RPC")
 
 
 async def process_new_pool_event(pool_event: dict):
@@ -47,7 +47,7 @@ async def process_new_pool_event(pool_event: dict):
         logger.info(f"رفض {meta.symbol}: {onchain_result.reason}")
         return
 
-    # المرحلة 2: السمعة (سجل المطور + RugCheck)
+    # المرحلة 2: السمعة (سجل المطور + GoPlus)
     reputation_ok, reputation_reason = await evaluate_reputation(
         meta.mint_address, pool_event.get("deployer_wallet", "")
     )
@@ -87,14 +87,14 @@ async def process_new_pool_event(pool_event: dict):
 
 async def run_mempool_listener():
     """
-    TODO: الاشتراك الفعلي في قناة Helius المناسبة لأحداث إنشاء pools جديدة
-    (عبر Enhanced WebSocket أو Geyser gRPC حسب باقة Helius المستخدمة).
+    TODO: الاشتراك الفعلي في قناة Alchemy المناسبة لأحداث إنشاء pools جديدة
+    (عبر Alchemy WebSocket subscribe على برنامج Raydium/Pump.fun، أو gRPC إن توفر).
     """
     init_watchlist_table()
     logger.info("بدء الاستماع لأحداث السيولة الجديدة...")
 
-    async with websockets.connect(HELIUS_WS_URL) as ws:
-        # TODO: إرسال رسالة الاشتراك المناسبة (subscribe) حسب توثيق Helius
+    async with websockets.connect(ALCHEMY_WS_URL) as ws:
+        # TODO: إرسال رسالة الاشتراك المناسبة (subscribe) حسب توثيق Alchemy لـ Solana
         # await ws.send(json.dumps({...}))
         async for message in ws:
             try:
