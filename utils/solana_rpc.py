@@ -12,26 +12,48 @@ from config.settings import ALCHEMY_RPC_URL
 logger = logging.getLogger("solana_rpc")
 
 
-async def rpc_call(method: str, params: list, timeout: int = 20) -> dict:
+async def rpc_call(method: str, params: list, timeout: int = 20, max_retries: int = 3) -> dict:
     """
     ينفّذ استدعاء JSON-RPC عام إلى Alchemy ويرجع حقل "result" من الاستجابة.
-    يرمي استثناء عند فشل الاتصال أو رجوع خطأ من RPC، ليتعامل المستدعي معه بوضوح.
+    يعيد المحاولة تلقائياً عند أخطاء 503/429 المؤقتة (شائعة مع استعلامات ثقيلة
+    مثل getTokenLargestAccounts على عملات ضخمة الحجم كـ BONK)، بتأخير متزايد.
     """
     payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(ALCHEMY_RPC_URL, json=payload, timeout=timeout) as resp:
-                if resp.status != 200:
-                    text = await resp.text()
-                    raise RuntimeError(f"RPC status {resp.status} في {method}: {text[:300]}")
-                data = await resp.json()
-                if "error" in data:
-                    raise RuntimeError(f"RPC error في {method}: {data['error']}")
-                return data.get("result")
-    except asyncio.TimeoutError:
-        raise RuntimeError(f"انتهت المهلة الزمنية ({timeout}s) أثناء استدعاء {method}")
-    except aiohttp.ClientError as e:
-        raise RuntimeError(f"خطأ اتصال أثناء استدعاء {method}: {type(e).__name__}: {e}")
+    last_error = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(ALCHEMY_RPC_URL, json=payload, timeout=timeout) as resp:
+                    if resp.status in (429, 503):
+                        text = await resp.text()
+                        last_error = RuntimeError(
+                            f"RPC status {resp.status} في {method} (محاولة {attempt}/{max_retries}): {text[:200]}"
+                        )
+                        if attempt < max_retries:
+                            await asyncio.sleep(2 * attempt)  # تأخير متزايد: 2s, 4s, 6s...
+                            continue
+                        raise last_error
+
+                    if resp.status != 200:
+                        text = await resp.text()
+                        raise RuntimeError(f"RPC status {resp.status} في {method}: {text[:300]}")
+
+                    data = await resp.json()
+                    if "error" in data:
+                        raise RuntimeError(f"RPC error في {method}: {data['error']}")
+                    return data.get("result")
+
+        except asyncio.TimeoutError:
+            last_error = RuntimeError(f"انتهت المهلة الزمنية ({timeout}s) أثناء استدعاء {method} (محاولة {attempt}/{max_retries})")
+            if attempt < max_retries:
+                await asyncio.sleep(2 * attempt)
+                continue
+            raise last_error
+        except aiohttp.ClientError as e:
+            raise RuntimeError(f"خطأ اتصال أثناء استدعاء {method}: {type(e).__name__}: {e}")
+
+    raise last_error
 
 
 async def get_account_info_base64(address: str) -> str:
