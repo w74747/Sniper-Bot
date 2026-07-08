@@ -18,6 +18,11 @@ GOPLUS_APP_KEY = os.getenv("GOPLUS_APP_KEY", "")
 GOPLUS_APP_SECRET = os.getenv("GOPLUS_APP_SECRET", "")
 GOPLUS_API_BASE = "https://api.gopluslabs.io/api/v1"
 
+# Jupiter: تم إيقاف quote-api.jup.ag، والنطاق الجديد api.jup.ag يتطلب مفتاح API مجاني
+# احصل عليه من portal.jup.ag
+JUPITER_API_KEY = os.getenv("JUPITER_API_KEY", "")
+JUPITER_API_BASE = "https://api.jup.ag"
+
 # قناة التنبيهات (مثال: بوت تيليجرام لإرسال الإشعارات)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
