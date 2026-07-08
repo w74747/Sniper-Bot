@@ -9,14 +9,18 @@ import aiohttp
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
 
-from config.settings import ALCHEMY_RPC_URL, WALLET_PRIVATE_KEY
+from config.settings import ALCHEMY_RPC_URL, WALLET_PRIVATE_KEY, JUPITER_API_BASE, JUPITER_API_KEY
 from utils.solana_rpc import rpc_call
 
 logger = logging.getLogger("swap_executor")
 
-JUPITER_QUOTE_API = "https://quote-api.jup.ag/v6/quote"
-JUPITER_SWAP_API = "https://quote-api.jup.ag/v6/swap"
+JUPITER_QUOTE_API = f"{JUPITER_API_BASE}/swap/v1/quote"
+JUPITER_SWAP_API = f"{JUPITER_API_BASE}/swap/v1/swap"
 SOL_MINT_ADDRESS = "So11111111111111111111111111111111111111112"
+
+
+def _jupiter_headers() -> dict:
+    return {"x-api-key": JUPITER_API_KEY} if JUPITER_API_KEY else {}
 
 
 def load_wallet_keypair() -> Keypair:
@@ -42,7 +46,9 @@ async def get_jupiter_quote(input_mint: str, output_mint: str, amount: int, slip
         "slippageBps": slippage_bps,
     }
     async with aiohttp.ClientSession() as session:
-        async with session.get(JUPITER_QUOTE_API, params=params, timeout=10) as resp:
+        async with session.get(
+            JUPITER_QUOTE_API, params=params, headers=_jupiter_headers(), timeout=10
+        ) as resp:
             if resp.status != 200:
                 raise RuntimeError(f"فشل الحصول على quote من Jupiter: status {resp.status}")
             return await resp.json()
@@ -100,7 +106,7 @@ async def build_and_send_swap(
     }
 
     async with aiohttp.ClientSession() as session:
-        async with session.post(JUPITER_SWAP_API, json=swap_payload, timeout=15) as resp:
+        async with session.post(JUPITER_SWAP_API, json=swap_payload, headers=_jupiter_headers(), timeout=15) as resp:
             if resp.status != 200:
                 raise RuntimeError(f"فشل بناء معاملة swap من Jupiter: status {resp.status}")
             swap_data = await resp.json()
@@ -143,7 +149,7 @@ async def simulate_swap_transaction(
         "wrapAndUnwrapSol": True,
     }
     async with aiohttp.ClientSession() as session:
-        async with session.post(JUPITER_SWAP_API, json=swap_payload, timeout=15) as resp:
+        async with session.post(JUPITER_SWAP_API, json=swap_payload, headers=_jupiter_headers(), timeout=15) as resp:
             swap_data = await resp.json()
 
     raw_tx_bytes = base64.b64decode(swap_data["swapTransaction"])
