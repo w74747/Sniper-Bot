@@ -7,11 +7,16 @@ from dataclasses import dataclass, field
 from typing import List
 
 # ── مفاتيح API (تُقرأ من متغيرات البيئة .env — لا تضع مفاتيح حقيقية هنا مباشرة) ──
-HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", "")
-HELIUS_RPC_URL = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
-HELIUS_WS_URL = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
+# Alchemy: بديل مجاني بفريتير أسخى من Helius (30 مليون Compute Unit شهرياً مجاناً)
+ALCHEMY_API_KEY = os.getenv("ALCHEMY_API_KEY", "")
+ALCHEMY_RPC_URL = f"https://solana-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}"
+ALCHEMY_WS_URL = f"wss://solana-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}"
 
-RUGCHECK_API_BASE = "https://api.rugcheck.xyz/v1"
+# GoPlus Security: بديل مجاني بالكامل لـ RugCheck — لا يحتاج اشتراكاً مدفوعاً
+# مفتاح API اختياري (App Key/Secret) لرفع حد الطلبات، لكن الخدمة تعمل بدونه بحد أساسي مجاني
+GOPLUS_APP_KEY = os.getenv("GOPLUS_APP_KEY", "")
+GOPLUS_APP_SECRET = os.getenv("GOPLUS_APP_SECRET", "")
+GOPLUS_API_BASE = "https://api.gopluslabs.io/api/v1"
 
 # قناة التنبيهات (مثال: بوت تيليجرام لإرسال الإشعارات)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -44,8 +49,8 @@ class FilterThresholds:
     check_deployer_history: bool = True
     max_allowed_prior_rugs: int = 0              # صفر تسامح: أي سجل rug سابق موثق = رفض فوري
 
-    # 5) فحص الأمان العام عبر RugCheck
-    min_rugcheck_score: float = 70.0             # الحد الأدنى لدرجة الأمان من RugCheck (0-100)
+    # 5) فحص الأمان العام عبر GoPlus
+    min_security_score: float = 70.0             # الحد الأدنى لدرجة الأمان من GoPlus (0-100)
 
     # كلمات مفتاحية محظورة في الاسم/الوصف (فلترة شرعية أولية)
     forbidden_keywords: List[str] = field(default_factory=lambda: [
