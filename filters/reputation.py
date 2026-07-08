@@ -134,51 +134,63 @@ async def check_goplus_security(mint_address: str) -> Optional[GoPlusResult]:
     يستعلم من GoPlus Security API عن أمان عقد Solana.
     Endpoint: GET https://api.gopluslabs.io/api/v1/solana/token_security?contract_addresses=...
 
-    يستخدم access token (إذا توفر App Key/Secret) لرفع حد الطلبات المسموح،
-    ويعمل أيضاً بدون توكن بحد مجاني أساسي أقل إذا لم تتوفر المفاتيح.
+    ملاحظة تشخيصية مهمة: هذا الـ endpoint يعمل بنجاح بدون أي مصادقة (حد مجاني
+    أساسي)، لكن إرسال Authorization غير صحيح الصيغة قد يتسبب في رفض الطلب
+    بالكامل برسالة "signature verification failure" بدل تجاهله بصمت. لذلك
+    نجرّب أولاً بدون أي هيدر مصادقة، ونستخدم access_token فقط كخطوة احتياطية
+    لاحقة إذا فشلت المحاولة الأولى تحديداً بسبب نقص البيانات (لا بسبب خطأ توقيع).
     """
     url = f"{GOPLUS_API_BASE}/solana/token_security"
-    headers = {}
+    params = {"contract_addresses": mint_address}
 
+    async def _attempt(headers: dict, label: str) -> Optional[GoPlusResult]:
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.get(url, params=params, headers=headers, timeout=10) as resp:
+                    raw_text = await resp.text()
+                    if resp.status != 200:
+                        logger.warning(
+                            f"[{label}] GoPlus رجع status {resp.status} لعملة {mint_address}: {raw_text[:300]}"
+                        )
+                        return None
+                    data = await resp.json()
+                    if "code" in data and data.get("code") not in (0, 1, 200):
+                        logger.warning(f"[{label}] GoPlus رجع خطأ منطقي: {raw_text[:300]}")
+                        return None
+                    result_dict = data.get("result", {})
+                    token_data = result_dict.get(mint_address)
+                    if not token_data:
+                        for key, value in result_dict.items():
+                            if key.lower() == mint_address.lower():
+                                token_data = value
+                                break
+                    if not token_data:
+                        logger.warning(
+                            f"[{label}] GoPlus لم يُرجع بيانات لعملة {mint_address} — "
+                            f"الاستجابة الخام: {raw_text[:400]}"
+                        )
+                        return None
+                    logger.warning(f"[{label}] نجح الحصول على بيانات GoPlus ✅")
+                    return _parse_goplus_response(token_data)
+            except Exception as e:
+                logger.warning(f"[{label}] فشل الاتصال بـ GoPlus: {type(e).__name__}: {e}")
+                return None
+
+    # المحاولة 1: بدون أي هيدر مصادقة (الحد المجاني الأساسي المعروف أنه يعمل)
+    result = await _attempt(headers={}, label="بدون-توكن")
+    if result:
+        return result
+
+    # المحاولة 2: مع access_token (فقط إذا فشلت المحاولة الأولى، وليس بسبب خطأ توقيع)
     access_token = await get_goplus_access_token()
     if access_token:
-        headers["Authorization"] = f"Bearer {access_token}"
-    else:
-        logger.warning("لم يُستخدم أي access_token في طلب GoPlus (المصادقة فشلت أو غير متوفرة)")
+        result = await _attempt(
+            headers={"Authorization": f"Bearer {access_token}"}, label="مع-توكن"
+        )
+        if result:
+            return result
 
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(
-                url, params={"contract_addresses": mint_address},
-                headers=headers, timeout=10,
-            ) as resp:
-                raw_text = await resp.text()
-                if resp.status != 200:
-                    logger.warning(
-                        f"GoPlus رجع status {resp.status} لعملة {mint_address}: {raw_text[:300]}"
-                    )
-                    return None
-                data = await resp.json()
-                result_dict = data.get("result", {})
-                # عناوين Solana حساسة لحالة الأحرف (Base58) — لا نحوّلها لحروف صغيرة.
-                # نجرّب أولاً المطابقة الدقيقة، ثم كحل احتياطي نبحث بدون حساسية
-                # لحالة الأحرف تحسباً لأي اختلاف من طرف GoPlus نفسه.
-                token_data = result_dict.get(mint_address)
-                if not token_data:
-                    for key, value in result_dict.items():
-                        if key.lower() == mint_address.lower():
-                            token_data = value
-                            break
-                if not token_data:
-                    logger.warning(
-                        f"GoPlus لم يُرجع بيانات لعملة {mint_address} — "
-                        f"الاستجابة الخام الكاملة: {raw_text[:500]}"
-                    )
-                    return None
-                return _parse_goplus_response(token_data)
-        except Exception as e:
-            logger.warning(f"فشل الاتصال بـ GoPlus: {e}")
-            return None
+    return None
 
 
 def _parse_goplus_response(token_data: dict) -> GoPlusResult:
