@@ -7,10 +7,51 @@
 
 كل دالة هنا ترجع (passed: bool, reason: str) لتوضيح سبب القبول/الرفض بدقة.
 """
+import base64
+import struct
 from dataclasses import dataclass
 from typing import Optional
 
 from config.settings import FILTERS
+
+# طول حساب Mint في SPL Token القياسي (بالبايت) — ثابت حسب مواصفة البروتوكول
+SPL_MINT_ACCOUNT_LEN = 82
+
+# عناوين "الحرق" المعروفة على Solana — أي عملة تُرسل لهذه العناوين تُعتبر محروقة فعلياً
+KNOWN_BURN_ADDRESSES = {
+    "11111111111111111111111111111111",  # System Program / null address
+    "1nc1nerator11111111111111111111111111111",  # عنوان حرق شائع
+}
+
+
+def parse_spl_mint_account(base64_data: str) -> dict:
+    """
+    يفك تشفير حساب Mint الخام (القادم من getAccountInfo) حسب تخطيط SPL Token الرسمي:
+
+    mint_authority: COption<Pubkey>   -> 4 بايت tag + 32 بايت pubkey = 36 بايت
+    supply: u64                       -> 8 بايت
+    decimals: u8                      -> 1 بايت
+    is_initialized: bool              -> 1 بايت
+    freeze_authority: COption<Pubkey> -> 4 بايت tag + 32 بايت pubkey = 36 بايت
+    المجموع: 82 بايت
+    """
+    raw = base64.b64decode(base64_data)
+    if len(raw) < SPL_MINT_ACCOUNT_LEN:
+        raise ValueError(f"بيانات حساب Mint أقصر من المتوقع: {len(raw)} بايت")
+
+    mint_authority_tag = struct.unpack_from("<I", raw, 0)[0]
+    supply = struct.unpack_from("<Q", raw, 36)[0]
+    decimals = raw[44]
+    is_initialized = bool(raw[45])
+    freeze_authority_tag = struct.unpack_from("<I", raw, 46)[0]
+
+    return {
+        "mint_authority_active": mint_authority_tag == 1,
+        "freeze_authority_active": freeze_authority_tag == 1,
+        "supply": supply,
+        "decimals": decimals,
+        "is_initialized": is_initialized,
+    }
 
 
 @dataclass
