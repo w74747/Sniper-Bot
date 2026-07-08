@@ -4,6 +4,7 @@
 1. حساب الربح/الخسارة بدقة عند "تطهير رأس المال" من صفقة مشبوهة لاحقاً.
 2. تحليل أداء الفلاتر لاحقاً وتحسينها بناءً على بيانات حقيقية.
 """
+import os
 import sqlite3
 import time
 from dataclasses import dataclass, asdict
@@ -13,6 +14,7 @@ DB_PATH = "logs/trades.db"
 
 
 def init_db(db_path: str = DB_PATH):
+    os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS trades (
