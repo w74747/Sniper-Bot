@@ -1,20 +1,28 @@
 """
 فحوصات السمعة الخارجية:
 1. سجل محفظة المطور (Deployer Wallet History) — عبر Solana RPC (getSignaturesForAddress + تحليل)
-2. درجة الأمان من RugCheck.xyz API
+2. درجة الأمان من GoPlus Security API (بديل مجاني بالكامل لـ RugCheck)
 
 هذه الفحوصات أبطأ قليلاً من الفلاتر on-chain المباشرة لكنها لا تزال ضمن نافذة
 الثواني المعدودة، وتُعتبر جزءاً من "الفلترة الآلية عند الدخول".
 """
+import hashlib
 import logging
+import time
 from dataclasses import dataclass
 from typing import Optional
 
 import aiohttp
 
-from config.settings import RUGCHECK_API_BASE, HELIUS_RPC_URL, FILTERS
+from config.settings import (
+    GOPLUS_API_BASE, GOPLUS_APP_KEY, GOPLUS_APP_SECRET,
+    ALCHEMY_RPC_URL, FILTERS,
+)
 
 logger = logging.getLogger("reputation")
+
+# تخزين مؤقت للتوكن في الذاكرة (access_token, وقت الانتهاء بالثواني)
+_token_cache = {"access_token": None, "expires_at": 0}
 
 
 @dataclass
@@ -25,10 +33,50 @@ class DeployerHistoryResult:
 
 
 @dataclass
-class RugCheckResult:
-    score: float  # 0-100، كلما ارتفع كان أفضل
+class GoPlusResult:
+    """نتيجة موحّدة مستخلصة من استجابة GoPlus (تقوم مقام RugCheckResult سابقاً)."""
+    score: float  # 0-100 نحسبها نحن بناءً على الأعلام (flags) التي يرجعها GoPlus
     risks: list
     raw: dict
+
+
+async def get_goplus_access_token() -> Optional[str]:
+    """
+    يولّد توقيعاً (sign) عبر sha1(app_key + timestamp + app_secret)، ويطلب به
+    access token من GoPlus. يُخزَّن التوكن مؤقتاً ويُعاد استخدامه حتى قرب انتهائه
+    (GoPlus يرجع مدة صلاحية expires_in بالثواني ضمن الاستجابة).
+    """
+    if not GOPLUS_APP_KEY or not GOPLUS_APP_SECRET:
+        return None  # لا مفتاح متوفر — سيعمل الاستعلام بدون توكن بحد مجاني أساسي
+
+    now = int(time.time())
+    if _token_cache["access_token"] and now < _token_cache["expires_at"] - 60:
+        return _token_cache["access_token"]  # التوكن الحالي ما زال صالحاً
+
+    sign_raw = f"{GOPLUS_APP_KEY}{now}{GOPLUS_APP_SECRET}"
+    sign = hashlib.sha1(sign_raw.encode("utf-8")).hexdigest()
+
+    url = f"{GOPLUS_API_BASE}/token"
+    payload = {"app_key": GOPLUS_APP_KEY, "time": now, "sign": sign}
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(url, json=payload, timeout=10) as resp:
+                if resp.status != 200:
+                    logger.warning(f"فشل الحصول على GoPlus access token: status {resp.status}")
+                    return None
+                data = await resp.json()
+                result = data.get("result", {})
+                token = result.get("access_token")
+                expires_in = result.get("expires_in", 86400)  # افتراضي: 24 ساعة
+                if token:
+                    _token_cache["access_token"] = token
+                    _token_cache["expires_at"] = now + int(expires_in)
+                    logger.info("تم الحصول على GoPlus access token جديد")
+                return token
+        except Exception as e:
+            logger.warning(f"خطأ أثناء طلب GoPlus access token: {e}")
+            return None
 
 
 async def check_deployer_history(deployer_wallet: str) -> DeployerHistoryResult:
@@ -48,7 +96,7 @@ async def check_deployer_history(deployer_wallet: str) -> DeployerHistoryResult:
                 "method": "getSignaturesForAddress",
                 "params": [deployer_wallet, {"limit": 50}],
             }
-            async with session.post(HELIUS_RPC_URL, json=payload, timeout=10) as resp:
+            async with session.post(ALCHEMY_RPC_URL, json=payload, timeout=10) as resp:
                 data = await resp.json()
                 tx_count = len(data.get("result", []))
 
@@ -75,24 +123,76 @@ async def check_deployer_history(deployer_wallet: str) -> DeployerHistoryResult:
             )
 
 
-async def check_rugcheck_score(mint_address: str) -> Optional[RugCheckResult]:
-    """يستعلم من RugCheck.xyz API عن درجة أمان العقد."""
-    url = f"{RUGCHECK_API_BASE}/tokens/{mint_address}/report"
+async def check_goplus_security(mint_address: str) -> Optional[GoPlusResult]:
+    """
+    يستعلم من GoPlus Security API عن أمان عقد Solana.
+    Endpoint: GET https://api.gopluslabs.io/api/v1/solana/token_security?contract_addresses=...
+
+    يستخدم access token (إذا توفر App Key/Secret) لرفع حد الطلبات المسموح،
+    ويعمل أيضاً بدون توكن بحد مجاني أساسي أقل إذا لم تتوفر المفاتيح.
+    """
+    url = f"{GOPLUS_API_BASE}/solana/token_security"
+    headers = {}
+
+    access_token = await get_goplus_access_token()
+    if access_token:
+        headers["Authorization"] = access_token
+
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.get(url, timeout=10) as resp:
+            async with session.get(
+                url, params={"contract_addresses": mint_address},
+                headers=headers, timeout=10,
+            ) as resp:
                 if resp.status != 200:
-                    logger.warning(f"RugCheck رجع status {resp.status} لعملة {mint_address}")
+                    logger.warning(f"GoPlus رجع status {resp.status} لعملة {mint_address}")
                     return None
                 data = await resp.json()
-                return RugCheckResult(
-                    score=data.get("score", 0),
-                    risks=data.get("risks", []),
-                    raw=data,
-                )
+                token_data = data.get("result", {}).get(mint_address.lower(), {})
+                if not token_data:
+                    logger.warning(f"GoPlus لم يُرجع بيانات لعملة {mint_address}")
+                    return None
+                return _parse_goplus_response(token_data)
         except Exception as e:
-            logger.warning(f"فشل الاتصال بـ RugCheck: {e}")
+            logger.warning(f"فشل الاتصال بـ GoPlus: {e}")
             return None
+
+
+def _parse_goplus_response(token_data: dict) -> GoPlusResult:
+    """
+    يحوّل استجابة GoPlus الخام (أعلام Boolean/نصية) إلى درجة رقمية موحّدة (0-100)
+    وقائمة مخاطر نصية، بنفس شكل الدرجة التي كنا نستخدمها من RugCheck سابقاً.
+    """
+    risks = []
+    score = 100.0  # نبدأ من الدرجة الكاملة ونخصم عند كل علم خطر
+
+    # هذه الأعلام تُرجعها GoPlus عادة كسلاسل نصية "1"/"0" — نتعامل معها بمرونة
+    def is_risky(flag_value) -> bool:
+        return str(flag_value) in ("1", "true", "True")
+
+    if is_risky(token_data.get("mintable", {}).get("status", "0")):
+        risks.append("صلاحية طباعة عملات جديدة (mintable) ما زالت فعّالة")
+        score -= 40
+
+    if is_risky(token_data.get("freezable", {}).get("status", "0")):
+        risks.append("صلاحية تجميد المحافظ (freezable) ما زالت فعّالة")
+        score -= 40
+
+    if is_risky(token_data.get("transfer_fee_upgradable", {}).get("status", "0")):
+        risks.append("ضريبة التحويل قابلة للتعديل بشكل غير محدود")
+        score -= 15
+
+    if is_risky(token_data.get("closable", {}).get("status", "0")):
+        risks.append("العقد يحتوي على صلاحية إغلاق الحساب (closable)")
+        score -= 10
+
+    balance_mutable = token_data.get("balance_mutable_authority", {})
+    if is_risky(balance_mutable.get("status", "0")):
+        risks.append("يوجد صلاحية لتعديل أرصدة المستخدمين مباشرة (balance_mutable_authority)")
+        score -= 40
+
+    score = max(0.0, score)
+    return GoPlusResult(score=score, risks=risks, raw=token_data)
 
 
 async def evaluate_reputation(mint_address: str, deployer_wallet: str):
@@ -101,14 +201,14 @@ async def evaluate_reputation(mint_address: str, deployer_wallet: str):
     if history.known_prior_rugs > FILTERS.max_allowed_prior_rugs:
         return False, f"رفض بسبب سجل المطور: {history.reason}"
 
-    rugcheck = await check_rugcheck_score(mint_address)
-    if rugcheck is None:
-        return False, "تعذّر الحصول على تقرير RugCheck — تم الرفض احتياطياً (fail-safe)"
+    goplus = await check_goplus_security(mint_address)
+    if goplus is None:
+        return False, "تعذّر الحصول على تقرير GoPlus — تم الرفض احتياطياً (fail-safe)"
 
-    if rugcheck.score < FILTERS.min_rugcheck_score:
+    if goplus.score < FILTERS.min_security_score:
         return False, (
-            f"درجة RugCheck ({rugcheck.score}) أقل من الحد الأدنى "
-            f"({FILTERS.min_rugcheck_score}). المخاطر المكتشفة: {rugcheck.risks}"
+            f"درجة الأمان ({goplus.score}) أقل من الحد الأدنى "
+            f"({FILTERS.min_security_score}). المخاطر المكتشفة: {goplus.risks}"
         )
 
-    return True, f"اجتازت فحوصات السمعة (RugCheck score: {rugcheck.score})"
+    return True, f"اجتازت فحوصات السمعة (GoPlus score: {goplus.score})"
