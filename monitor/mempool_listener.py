@@ -9,6 +9,7 @@
 import asyncio
 import json
 import logging
+from typing import Optional
 
 import websockets
 
@@ -19,10 +20,138 @@ from filters.onchain_filters import (
 )
 from filters.reputation import evaluate_reputation
 from filters.sell_simulation import simulate_sell, evaluate_simulation_result
-from monitor.watchlist import WatchlistEntry, add_to_watchlist, init_watchlist_table
-from utils.solana_rpc import get_account_info_base64, get_token_largest_accounts
+from monitor.watchlist import (
+    WatchlistEntry, add_to_watchlist, init_watchlist_table, is_already_in_watchlist,
+)
+from db.trades import has_seen_mint_before
+from utils.solana_rpc import get_account_info_base64, get_token_largest_accounts, rpc_call
 
 logger = logging.getLogger("mempool_listener")
+
+# عناوين البرامج المعروفة والثابتة على Solana Mainnet
+PUMP_FUN_PROGRAM_ID = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+RAYDIUM_AMM_V4_PROGRAM_ID = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
+
+MONITORED_PROGRAM_IDS = [PUMP_FUN_PROGRAM_ID, RAYDIUM_AMM_V4_PROGRAM_ID]
+
+
+def parse_pump_fun_create_instruction(tx_data: dict) -> Optional[dict]:
+    """
+    يحلل معاملة "create" من Pump.fun لاستخراج بيانات العملة الجديدة.
+
+    بنية تعليمة "create" في Pump.fun (موثّقة علناً وثابتة نسبياً):
+    الحسابات بالترتيب: [mint, mint_authority, bonding_curve,
+    associated_bonding_curve, global, mpl_token_metadata, metadata,
+    user (=المطور/الموقّع), system_program, token_program,
+    associated_token_program, rent, event_authority, program]
+
+    نبحث في transaction.message.instructions عن تعليمة موجّهة لبرنامج
+    Pump.fun، ونستخرج account[0] كـ mint و account[7] كمطور (user).
+
+    ملاحظة: هذا الترتيب مبني على IDL منشور علناً لـ Pump.fun، لكن أي
+    تحديث مستقبلي من طرفهم للعقد قد يغيّر الترتيب — يُنصح بالتحقق دورياً
+    عبر مقارنة الاستخراج مع بيانات معروفة (مثل موقع pump.fun نفسه).
+    """
+    try:
+        message = tx_data["transaction"]["message"]
+        account_keys = message["accountKeys"]
+
+        for ix in message["instructions"]:
+            program_id_index = ix.get("programIdIndex")
+            if program_id_index is None:
+                continue
+            program_id = account_keys[program_id_index]
+            if isinstance(program_id, dict):
+                program_id = program_id.get("pubkey", "")
+
+            if program_id != PUMP_FUN_PROGRAM_ID:
+                continue
+
+            ix_accounts = ix.get("accounts", [])
+            if len(ix_accounts) < 8:
+                continue
+
+            def _resolve(idx):
+                key = account_keys[ix_accounts[idx]]
+                return key.get("pubkey") if isinstance(key, dict) else key
+
+            mint_address = _resolve(0)
+            bonding_curve = _resolve(2)
+            deployer_wallet = _resolve(7)
+
+            return {
+                "mint_address": mint_address,
+                "pool_address": bonding_curve,
+                "deployer_wallet": deployer_wallet,
+                "dex": "pump.fun",
+                "lp_mint_address": None,  # Pump.fun لا يستخدم LP mint تقليدي (bonding curve)
+            }
+    except (KeyError, IndexError, TypeError) as e:
+        logger.debug(f"فشل تحليل معاملة Pump.fun: {e}")
+
+    return None
+
+
+def parse_raydium_initialize_instruction(tx_data: dict) -> Optional[dict]:
+    """
+    يحلل معاملة "initialize2" من Raydium AMM V4 لاستخراج بيانات الـ pool الجديد.
+
+    تحذير صريح: بنية حسابات Raydium initialize2 أكثر تعقيداً وتغيّراً من
+    Pump.fun (18+ حساباً بترتيب دقيق يشمل: amm, amm_authority,
+    amm_open_orders, lp_mint, coin_mint, pc_mint, coin_vault, pc_vault...).
+    المواقع أدناه (lp_mint_index, coin_mint_index) هي **تقدير أولي غير
+    مُختبر على معاملة حقيقية فعلياً** — يجب التحقق منها بمقارنة مع معاملة
+    Raydium حقيقية معروفة (عبر Solscan مثلاً) قبل الاعتماد عليها في
+    قرارات شراء فعلية بأموال حقيقية.
+
+    TODO حرج قبل الاستخدام الحقيقي: تحقق يدوياً من هذه المواقع بفحص
+    معاملة "initialize2" حقيقية على solscan.io وتأكيد أي حساب هو فعلاً
+    lp_mint وأيها coin_mint (العملة الجديدة).
+    """
+    try:
+        message = tx_data["transaction"]["message"]
+        account_keys = message["accountKeys"]
+
+        for ix in message["instructions"]:
+            program_id_index = ix.get("programIdIndex")
+            if program_id_index is None:
+                continue
+            program_id = account_keys[program_id_index]
+            if isinstance(program_id, dict):
+                program_id = program_id.get("pubkey", "")
+
+            if program_id != RAYDIUM_AMM_V4_PROGRAM_ID:
+                continue
+
+            ix_accounts = ix.get("accounts", [])
+            if len(ix_accounts) < 10:
+                continue
+
+            def _resolve(idx):
+                key = account_keys[ix_accounts[idx]]
+                return key.get("pubkey") if isinstance(key, dict) else key
+
+            # TODO: هذه المواقع تقديرية — تحتاج تأكيداً على معاملة حقيقية
+            amm_address = _resolve(4)
+            lp_mint = _resolve(7)
+            coin_mint = _resolve(8)  # العملة الجديدة المفترضة (غير مؤكدة)
+
+            logger.warning(
+                "تحليل Raydium initialize2 يستخدم مواقع حسابات غير مُختبرة بعد — "
+                "راجع TODO في parse_raydium_initialize_instruction قبل الاعتماد عليه"
+            )
+
+            return {
+                "mint_address": coin_mint,
+                "pool_address": amm_address,
+                "lp_mint_address": lp_mint,
+                "deployer_wallet": "",  # يحتاج تحديداً إضافياً من fee payer المعاملة
+                "dex": "raydium",
+            }
+    except (KeyError, IndexError, TypeError) as e:
+        logger.debug(f"فشل تحليل معاملة Raydium: {e}")
+
+    return None
 
 
 async def fetch_token_metadata(pool_event: dict) -> TokenMetadata:
@@ -107,6 +236,14 @@ async def process_new_pool_event(pool_event: dict):
     if dex not in DEX_ALLOWLIST:
         return  # تجاهل صامت — منصة غير مدرجة في القائمة المسموحة
 
+    mint_address = pool_event.get("mint_address", "")
+
+    # فحص عدم التكرار: هل رأينا هذه العملة من قبل (صفقة سابقة أو في watchlist)؟
+    # هذا يمنع "نسيان" قرارات سابقة عند تكرار حدث من الشبكة أو إعادة تشغيل البوت.
+    if has_seen_mint_before(mint_address) or is_already_in_watchlist(mint_address):
+        logger.debug(f"تجاهل {mint_address} — تم رصدها/التعامل معها من قبل")
+        return
+
     try:
         meta = await fetch_token_metadata(pool_event)
     except Exception as e:
@@ -154,20 +291,87 @@ async def process_new_pool_event(pool_event: dict):
     ))
 
 
+async def fetch_and_parse_transaction(signature: str) -> Optional[dict]:
+    """
+    يجلب معاملة كاملة عبر توقيعها، ويحاول تحليلها كحدث Pump.fun أو Raydium.
+    يرجع pool_event جاهزاً لـ process_new_pool_event، أو None إذا لم يُتعرّف عليها.
+    """
+    try:
+        tx_data = await rpc_call(
+            "getTransaction",
+            [signature, {"encoding": "json", "maxSupportedTransactionVersion": 0}],
+        )
+    except Exception as e:
+        logger.debug(f"تعذّر جلب المعاملة {signature}: {e}")
+        return None
+
+    if not tx_data:
+        return None
+
+    event = parse_pump_fun_create_instruction(tx_data)
+    if event:
+        return event
+
+    event = parse_raydium_initialize_instruction(tx_data)
+    if event:
+        return event
+
+    return None
+
+
 async def run_mempool_listener():
     """
-    TODO: الاشتراك الفعلي في قناة Alchemy المناسبة لأحداث إنشاء pools جديدة
-    (عبر Alchemy WebSocket subscribe على برنامج Raydium/Pump.fun، أو gRPC إن توفر).
+    يشترك فعلياً عبر logsSubscribe في Alchemy WebSocket لمراقبة أي معاملة
+    تذكر برنامج Pump.fun أو Raydium AMM V4، ثم يجلب كل معاملة مطابقة
+    كاملة عبر getTransaction لتحليلها واستخراج بيانات العملة الجديدة.
+
+    ملاحظة الأداء: logsSubscribe يرجع كل معاملة "تذكر" البرنامج، وليس فقط
+    معاملات إنشاء pool جديد (قد تشمل عمليات شراء/بيع عادية أيضاً) — لذلك
+    parse_pump_fun_create_instruction/parse_raydium_initialize_instruction
+    تتجاهلان صامتاً أي معاملة لا تحتوي فعلياً على تعليمة الإنشاء المطلوبة.
     """
     init_watchlist_table()
     logger.info("بدء الاستماع لأحداث السيولة الجديدة...")
 
+    subscribe_id = 1
     async with websockets.connect(ALCHEMY_WS_URL) as ws:
-        # TODO: إرسال رسالة الاشتراك المناسبة (subscribe) حسب توثيق Alchemy لـ Solana
-        # await ws.send(json.dumps({...}))
+        # اشتراك منفصل لكل برنامج مراقَب
+        for program_id in MONITORED_PROGRAM_IDS:
+            await ws.send(json.dumps({
+                "jsonrpc": "2.0",
+                "id": subscribe_id,
+                "method": "logsSubscribe",
+                "params": [
+                    {"mentions": [program_id]},
+                    {"commitment": "confirmed"},
+                ],
+            }))
+            subscribe_id += 1
+
         async for message in ws:
             try:
-                event = json.loads(message)
-                await process_new_pool_event(event)
+                data = json.loads(message)
+
+                # تجاهل ردود التأكيد الأولية للاشتراك (result = subscription id رقمي)
+                if "params" not in data:
+                    continue
+
+                value = data["params"].get("result", {}).get("value", {})
+                signature = value.get("signature")
+                logs = value.get("logs", [])
+
+                if not signature:
+                    continue
+
+                # فلترة سريعة: نتجاهل صامتاً أي معاملة لا تحتوي كلمة تشير لإنشاء
+                # (توفير استدعاءات RPC غير ضرورية لكل معاملة شراء/بيع عادية)
+                logs_text = " ".join(logs).lower()
+                if "create" not in logs_text and "initialize2" not in logs_text:
+                    continue
+
+                pool_event = await fetch_and_parse_transaction(signature)
+                if pool_event:
+                    await process_new_pool_event(pool_event)
+
             except Exception as e:
                 logger.error(f"خطأ في معالجة حدث جديد: {e}")
