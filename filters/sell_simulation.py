@@ -15,9 +15,11 @@ from dataclasses import dataclass
 
 import aiohttp
 
+from config.settings import JUPITER_API_BASE, JUPITER_API_KEY
+
 logger = logging.getLogger("sell_simulation")
 
-JUPITER_QUOTE_API = "https://quote-api.jup.ag/v6/quote"
+JUPITER_QUOTE_ENDPOINT = f"{JUPITER_API_BASE}/swap/v1/quote"
 SOL_MINT_ADDRESS = "So11111111111111111111111111111111111111112"
 
 
@@ -53,8 +55,11 @@ async def simulate_sell(
             "amount": test_amount_lamports,
             "slippageBps": 500,  # 5% انزلاق مسموح لمحاكاة الاختبار فقط
         }
+        headers = {"x-api-key": JUPITER_API_KEY} if JUPITER_API_KEY else {}
         async with aiohttp.ClientSession() as session:
-            async with session.get(JUPITER_QUOTE_API, params=params, timeout=10) as resp:
+            async with session.get(
+                JUPITER_QUOTE_ENDPOINT, params=params, headers=headers, timeout=10
+            ) as resp:
                 if resp.status != 200:
                     return SellSimulationResult(
                         can_sell=False,
