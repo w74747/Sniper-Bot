@@ -14,8 +14,8 @@ ALCHEMY_WS_URL = f"wss://solana-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}"
 
 # GoPlus Security: بديل مجاني بالكامل لـ RugCheck — لا يحتاج اشتراكاً مدفوعاً
 # مفتاح API اختياري (App Key/Secret) لرفع حد الطلبات، لكن الخدمة تعمل بدونه بحد أساسي مجاني
-GOPLUS_APP_KEY = os.getenv("GOPLUS_APP_KEY", "")
-GOPLUS_APP_SECRET = os.getenv("GOPLUS_APP_SECRET", "")
+GOPLUS_APP_KEY = os.getenv("GOPLUS_APP_KEY", "").strip()
+GOPLUS_APP_SECRET = os.getenv("GOPLUS_APP_SECRET", "").strip()
 GOPLUS_API_BASE = "https://api.gopluslabs.io/api/v1"
 
 # Jupiter: تم إيقاف quote-api.jup.ag، والنطاق الجديد api.jup.ag يتطلب مفتاح API مجاني
