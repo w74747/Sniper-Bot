@@ -72,6 +72,16 @@ def add_to_watchlist(entry: WatchlistEntry, db_path: str = DB_PATH) -> int:
     return watch_id
 
 
+def is_already_in_watchlist(mint_address: str, db_path: str = DB_PATH) -> bool:
+    """يفحص إن كانت هذه العملة موجودة مسبقاً في watchlist بأي حالة (لمنع التكرار)."""
+    conn = sqlite3.connect(db_path)
+    row = conn.execute(
+        "SELECT 1 FROM watchlist WHERE mint_address = ? LIMIT 1", (mint_address,)
+    ).fetchone()
+    conn.close()
+    return row is not None
+
+
 async def check_organic_growth(mint_address: str, holders_at_add: int) -> dict:
     """
     يفحص المؤشرات العضوية الحالية مقابل لحظة الإضافة للـ watchlist.
