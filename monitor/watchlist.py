@@ -10,6 +10,7 @@ Jito/co-location) مقابل التزام حقيقي بمعايير الجدية
 """
 import asyncio
 import logging
+import os
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ logger = logging.getLogger("watchlist")
 
 
 def init_watchlist_table(db_path: str = DB_PATH):
+    os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS watchlist (
@@ -68,7 +70,7 @@ async def check_organic_growth(mint_address: str, holders_at_add: int) -> dict:
     """
     يفحص المؤشرات العضوية الحالية مقابل لحظة الإضافة للـ watchlist.
     TODO: ربط فعلي بـ:
-    - عدد حاملين حالي (عبر Helius getTokenLargestAccounts أو ما شابه)
+    - عدد حاملين حالي (عبر Alchemy أو ما شابه)
     - حجم تداول عضوي مقابل wash trading (فحص أنماط التكرار في المعاملات)
     - نشاط GitHub فعلي إن وُجد رابط مستودع
     - نمو متابعين Twitter/Telegram (لا بوتات)
