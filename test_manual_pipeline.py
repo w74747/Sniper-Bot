@@ -14,9 +14,16 @@
 غير متوقع وتُرجع نتيجة منطقية مفهومة.
 """
 import asyncio
+import logging
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# تهيئة logging صراحة — بدون هذا، رسائل logger.info() لا تظهر إطلاقاً في Railway
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 
 from filters.onchain_filters import TokenMetadata, run_all_onchain_filters
 from filters.reputation import evaluate_reputation
