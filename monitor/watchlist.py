@@ -15,11 +15,17 @@ import sqlite3
 import time
 from dataclasses import dataclass
 
-from config.settings import WATCHLIST
+from config.settings import WATCHLIST, EXIT_STRATEGY
 from db.trades import DB_PATH
 from trading.executor import execute_buy
+from utils.solana_rpc import get_token_largest_accounts, rpc_call
 
 logger = logging.getLogger("watchlist")
+
+# TODO: اربط هذا برصيد المحفظة الفعلي عبر getBalance بدل رقم ثابت.
+# هذا يمثل "إجمالي رأس المال المخصص للبوت بالـ SOL" — عدّله يدوياً حالياً
+# حسب المبلغ الذي خصصته فعلياً لهذه الاستراتيجية.
+TOTAL_BOT_CAPITAL_SOL = 1.0
 
 
 def init_watchlist_table(db_path: str = DB_PATH):
@@ -69,16 +75,32 @@ def add_to_watchlist(entry: WatchlistEntry, db_path: str = DB_PATH) -> int:
 async def check_organic_growth(mint_address: str, holders_at_add: int) -> dict:
     """
     يفحص المؤشرات العضوية الحالية مقابل لحظة الإضافة للـ watchlist.
-    TODO: ربط فعلي بـ:
-    - عدد حاملين حالي (عبر Alchemy أو ما شابه)
-    - حجم تداول عضوي مقابل wash trading (فحص أنماط التكرار في المعاملات)
+
+    ملاحظة تنفيذية مهمة (تقريب معروف ومقصود):
+    getTokenLargestAccounts يرجع فقط أكبر 20 حاملاً كحد أقصى (قيد من Solana RPC
+    نفسه، وليس قيداً منّا) — لذلك "عدد الحاملين" هنا هو تقريب وليس عدّاً دقيقاً
+    لكل حاملي العملة. هذا كافٍ كمؤشر اتجاه (هل يتزايد التوزيع أم لا)، لكنه
+    ليس مصدراً دقيقاً 100%. لعدّ دقيق حقيقي، يلزم مصدر بيانات مخصص (indexer
+    كامل يتتبع كل حسابات التوكن)، وهو خارج نطاق استعلام RPC بسيط.
+
+    TODO المتبقي فعلاً (يحتاج خدمة خارجية، وليس RPC عادي):
+    - حجم تداول عضوي مقابل wash trading (يحتاج بيانات DEX تاريخية، مثل DexScreener API)
     - نشاط GitHub فعلي إن وُجد رابط مستودع
     - نمو متابعين Twitter/Telegram (لا بوتات)
     """
+    try:
+        largest_accounts = await get_token_largest_accounts(mint_address)
+        current_holders = sum(1 for h in largest_accounts if float(h.get("amount", 0)) > 0)
+    except Exception as e:
+        logger.warning(f"تعذّر فحص النمو العضوي لـ {mint_address}: {e}")
+        current_holders = holders_at_add
+
+    holders_growth = current_holders - holders_at_add
+
     return {
-        "current_holders": holders_at_add,  # يُستبدل بقيمة فعلية
-        "holders_growth": 0,
-        "organic_volume_ratio": 0.0,  # نسبة الحجم العضوي إلى الحجم الكلي
+        "current_holders": current_holders,
+        "holders_growth": holders_growth,
+        "organic_volume_ratio": None,  # TODO: يحتاج DexScreener API أو مصدر مشابه
     }
 
 
@@ -123,9 +145,10 @@ async def run_watchlist_loop(db_path: str = DB_PATH):
 
             if decision == "approved":
                 logger.info(f"موافقة على شراء {entry['symbol']}: {reason}")
+                capital_sol = TOTAL_BOT_CAPITAL_SOL * (EXIT_STRATEGY.max_capital_pct_per_trade / 100)
                 await execute_buy(
                     entry["mint_address"], entry["symbol"], entry["pool_address"],
-                    capital_sol=0.1,  # TODO: استخدام max_capital_pct_per_trade الفعلي
+                    capital_sol=capital_sol,
                     filter_report={"watchlist_decision": reason},
                 )
                 _update_watchlist_status(entry["id"], "approved", db_path)
