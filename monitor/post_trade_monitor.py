@@ -14,33 +14,51 @@ import logging
 from config.settings import POST_TRADE_MONITOR
 from db import trades as db
 from alerts import notifier
-from trading.executor import execute_emergency_sell  # سيُبنى في trading/executor.py
+from filters.onchain_filters import parse_spl_mint_account, KNOWN_BURN_ADDRESSES
+from filters.sell_simulation import simulate_sell, evaluate_simulation_result
+from trading.executor import execute_emergency_sell
+from utils.solana_rpc import get_account_info_base64, get_token_largest_accounts
 
 logger = logging.getLogger("post_trade_monitor")
 
 
 async def check_onchain_signals(trade: dict) -> tuple[bool, str]:
     """
-    يفحص إشارات on-chain قاطعة على عقد العملة المفتوحة صفقتها.
-    ملاحظة تنفيذية: يحتاج ربطاً فعلياً بقراءة حالة العقد الحالية عبر RPC
-    ومقارنتها بالحالة المسجّلة عند الدخول (المخزنة في filter_report).
+    يفحص إشارات on-chain قاطعة على عقد العملة المفتوحة صفقتها، بمقارنة الحالة
+    الحالية بالحالة المسجّلة عند الدخول (المخزنة في filter_report عند الشراء).
     """
-    # TODO: قراءة فعلية لحالة العقد الحالية (ضريبة البيع الحالية، هل LP ما زالت مقفلة، إلخ)
-    # مثال توضيحي فقط:
-    current_state = {
-        "sell_tax_pct": 0.0,        # يُقرأ فعلياً من العقد
-        "lp_withdrawn": False,      # يُقرأ فعلياً من رصيد pool address
-        "ownership_changed": False,  # يُقرأ فعلياً من owner() الحالي
-    }
+    mint_address = trade["mint_address"]
 
-    if current_state["sell_tax_pct"] > POST_TRADE_MONITOR.auto_close_on_tax_increase_above_pct:
-        return True, f"ارتفاع ضريبة البيع فجأة إلى {current_state['sell_tax_pct']}%"
+    try:
+        mint_data_b64 = await get_account_info_base64(mint_address)
+        mint_info = parse_spl_mint_account(mint_data_b64)
+    except Exception as e:
+        # فشل قراءة الحساب بالكامل قد يعني أن العقد أُغلق أو تعذّر الوصول إليه —
+        # هذا بحد ذاته مؤشر خطر يستحق الإغلاق الطارئ الفوري.
+        return True, f"تعذّر قراءة حالة العقد الحالية — مؤشر خطر: {e}"
 
-    if POST_TRADE_MONITOR.auto_close_on_lp_withdrawal and current_state["lp_withdrawn"]:
-        return True, "تم اكتشاف سحب سيولة (LP) من قبل المطور"
+    if POST_TRADE_MONITOR.auto_close_on_ownership_change and mint_info["mint_authority_active"]:
+        # إذا كانت الصفقة دخلت أصلاً بشرط mint_authority=False، وأصبحت الآن True
+        # (نادر لكن ممكن عبر بعض حيل العقود)، هذا تلاعب خطير جداً.
+        return True, "تم رصد إعادة تفعيل صلاحية طباعة عملات جديدة (mint authority) بعد الشراء"
 
-    if POST_TRADE_MONITOR.auto_close_on_ownership_change and current_state["ownership_changed"]:
-        return True, "تم اكتشاف تغيّر مفاجئ في ملكية العقد (ownership)"
+    # فحص محاكاة بيع جديدة — إذا أصبح البيع مستحيلاً أو الضريبة الفعلية مرتفعة فجأة
+    sim_result = await simulate_sell(
+        rpc_client=None,
+        wallet_pubkey="",
+        mint_address=mint_address,
+        pool_address="",
+        test_amount_lamports=1_000_000,
+    )
+    if not sim_result.can_sell:
+        return True, f"فشلت محاكاة بيع جديدة — قد يكون تحوّل إلى honeypot: {sim_result.reason}"
+
+    if sim_result.effective_sell_tax_pct > POST_TRADE_MONITOR.auto_close_on_tax_increase_above_pct:
+        return True, (
+            f"ارتفعت ضريبة/تأثير البيع الفعلي إلى "
+            f"{sim_result.effective_sell_tax_pct:.1f}% (الحد المسموح "
+            f"{POST_TRADE_MONITOR.auto_close_on_tax_increase_above_pct}%)"
+        )
 
     return False, ""
 
