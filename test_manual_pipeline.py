@@ -48,7 +48,7 @@ async def main():
         print(f"   supply: {mint_info['supply']}")
         print(f"   decimals: {mint_info['decimals']}")
     except Exception as e:
-        print(f"❌ فشلت هذه الخطوة: {e}")
+        print(f"❌ فشلت هذه الخطوة: {type(e).__name__}: {e!r}")
         print("   تحقق من: ALCHEMY_API_KEY في .env صحيح ومفعّل")
         return
 
@@ -61,7 +61,7 @@ async def main():
             top = largest_accounts[0]
             print(f"   أكبر حساب: {top.get('address')} برصيد {top.get('amount')}")
     except Exception as e:
-        print(f"❌ فشلت هذه الخطوة: {e}")
+        print(f"❌ فشلت هذه الخطوة: {type(e).__name__}: {e!r}")
         return
 
     # ── الخطوة 3: بناء TokenMetadata وتشغيل الفلاتر الآلية ──
