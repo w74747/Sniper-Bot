@@ -136,7 +136,7 @@ async def check_goplus_security(mint_address: str) -> Optional[GoPlusResult]:
 
     access_token = await get_goplus_access_token()
     if access_token:
-        headers["Authorization"] = access_token
+        headers["Authorization"] = f"Bearer {access_token}"
 
     async with aiohttp.ClientSession() as session:
         try:
@@ -148,9 +148,21 @@ async def check_goplus_security(mint_address: str) -> Optional[GoPlusResult]:
                     logger.warning(f"GoPlus رجع status {resp.status} لعملة {mint_address}")
                     return None
                 data = await resp.json()
-                token_data = data.get("result", {}).get(mint_address.lower(), {})
+                result_dict = data.get("result", {})
+                # عناوين Solana حساسة لحالة الأحرف (Base58) — لا نحوّلها لحروف صغيرة.
+                # نجرّب أولاً المطابقة الدقيقة، ثم كحل احتياطي نبحث بدون حساسية
+                # لحالة الأحرف تحسباً لأي اختلاف من طرف GoPlus نفسه.
+                token_data = result_dict.get(mint_address)
                 if not token_data:
-                    logger.warning(f"GoPlus لم يُرجع بيانات لعملة {mint_address}")
+                    for key, value in result_dict.items():
+                        if key.lower() == mint_address.lower():
+                            token_data = value
+                            break
+                if not token_data:
+                    logger.warning(
+                        f"GoPlus لم يُرجع بيانات لعملة {mint_address} — "
+                        f"المفاتيح المُرجعة فعلياً: {list(result_dict.keys())}"
+                    )
                     return None
                 return _parse_goplus_response(token_data)
         except Exception as e:
