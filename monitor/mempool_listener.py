@@ -373,15 +373,22 @@ async def _run_single_websocket_session():
                 if not signature:
                     continue
 
-                logs_text = " ".join(logs).lower()
-                if "create" not in logs_text and "initialize2" not in logs_text:
+                logs_text = " ".join(logs)
+                # فلترة دقيقة بنص التعليمة الفعلي وليس كلمة عامة — لأن "create"
+                # وحدها تظهر في أي معاملة عادية بسبب إنشاء ATA تلقائياً لكل عملية
+                is_pump_create = "Instruction: Create" in logs_text
+                is_raydium_init = "Instruction: Initialize2" in logs_text
+                if not is_pump_create and not is_raydium_init:
                     continue
 
                 logger.info(f"حدث مرشّح مكتشف: {signature[:16]}...")
 
                 pool_event = await fetch_and_parse_transaction(signature)
                 if pool_event:
+                    logger.info(f"تم استخراج بيانات عملة جديدة فعلياً: {pool_event.get('mint_address')}")
                     await process_new_pool_event(pool_event)
+                else:
+                    logger.debug(f"اجتاز الفلتر لكن فشل التحليل: {signature[:16]}...")
 
             except Exception as e:
                 logger.error(f"خطأ في معالجة رسالة واحدة: {type(e).__name__}: {e}")
