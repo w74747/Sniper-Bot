@@ -26,13 +26,16 @@ from monitor.mempool_listener import run_mempool_listener
 os.makedirs("logs", exist_ok=True)
 
 logging.basicConfig(
-    level=logging.DEBUG,  # TODO: أعد هذا إلى logging.INFO بعد انتهاء التشخيص المؤقت
+    level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
         logging.FileHandler("logs/bot.log", encoding="utf-8"),
         logging.StreamHandler(),
     ],
 )
+# حماية: حتى لو رُفع المستوى العام لـ DEBUG مستقبلاً للتشخيص، لا نريد إغراق
+# السجلات بتفاصيل داخلية من مكتبة websockets نفسها (نبضات ping/pong وغيرها)
+logging.getLogger("websockets").setLevel(logging.WARNING)
 logger = logging.getLogger("main")
 
 
