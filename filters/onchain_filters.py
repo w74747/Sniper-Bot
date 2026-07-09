@@ -14,27 +14,15 @@ from typing import Optional
 
 from config.settings import FILTERS
 
-# طول حساب Mint في SPL Token القياسي (بالبايت) — ثابت حسب مواصفة البروتوكول
 SPL_MINT_ACCOUNT_LEN = 82
 
-# عناوين "الحرق" المعروفة على Solana — أي عملة تُرسل لهذه العناوين تُعتبر محروقة فعلياً
 KNOWN_BURN_ADDRESSES = {
-    "11111111111111111111111111111111",  # System Program / null address
-    "1nc1nerator11111111111111111111111111111",  # عنوان حرق شائع
+    "11111111111111111111111111111111",
+    "1nc1nerator11111111111111111111111111111",
 }
 
 
 def parse_spl_mint_account(base64_data: str) -> dict:
-    """
-    يفك تشفير حساب Mint الخام (القادم من getAccountInfo) حسب تخطيط SPL Token الرسمي:
-
-    mint_authority: COption<Pubkey>   -> 4 بايت tag + 32 بايت pubkey = 36 بايت
-    supply: u64                       -> 8 بايت
-    decimals: u8                      -> 1 بايت
-    is_initialized: bool              -> 1 بايت
-    freeze_authority: COption<Pubkey> -> 4 بايت tag + 32 بايت pubkey = 36 بايت
-    المجموع: 82 بايت
-    """
     raw = base64.b64decode(base64_data)
     if len(raw) < SPL_MINT_ACCOUNT_LEN:
         raise ValueError(f"بيانات حساب Mint أقصر من المتوقع: {len(raw)} بايت")
@@ -61,10 +49,11 @@ class TokenMetadata:
     name: str
     symbol: str
     description: str = ""
+    dex: str = ""  # "pump.fun" أو "raydium" — يُستخدم لتكييف فحص حرق LP حسب طبيعة كل منصة
 
     total_supply: float = 0
-    mint_authority_active: bool = True   # هل ما زال بالإمكان طباعة عملات جديدة؟
-    freeze_authority_active: bool = True  # هل يمكن تجميد محافظ المستخدمين؟
+    mint_authority_active: bool = True
+    freeze_authority_active: bool = True
 
     lp_burned_or_locked_pct: float = 0.0
     dev_wallet_pct: float = 0.0
@@ -83,7 +72,6 @@ class FilterResult:
 
 
 def check_forbidden_keywords(meta: TokenMetadata) -> FilterResult:
-    """المستوى الأول: فلترة لغوية سريعة على الاسم والوصف والرمز."""
     text = f"{meta.name} {meta.symbol} {meta.description}".lower()
     for kw in FILTERS.forbidden_keywords:
         if kw in text:
@@ -92,7 +80,15 @@ def check_forbidden_keywords(meta: TokenMetadata) -> FilterResult:
 
 
 def check_supply_and_burn(meta: TokenMetadata) -> FilterResult:
-    """التحقق من آلية الانكماش/العرض الثابت."""
+    """
+    التحقق من آلية الانكماش/العرض الثابت.
+
+    ملاحظة مهمة لـ Pump.fun: هذه المنصة لا تستخدم "LP تقليدية" قابلة للحرق —
+    السيولة محبوسة داخل Bonding Curve نفسه ولا يمكن لأي طرف (حتى المطور)
+    سحبها يدوياً، بخلاف Raydium حيث حرق LP هو الضمانة الأساسية ضد Rug Pull.
+    لذلك نتجاوز شرط "حرق LP" لعملات Pump.fun تحديداً (لأنه غير منطبق على
+    تصميمها من الأساس)، بينما نُبقي هذا الشرط صارماً وإلزامياً لـ Raydium.
+    """
     if FILTERS.require_fixed_supply and meta.mint_authority_active:
         return FilterResult(
             False,
@@ -100,7 +96,9 @@ def check_supply_and_burn(meta: TokenMetadata) -> FilterResult:
             "supply_filter",
         )
 
-    if FILTERS.require_burn_or_lock:
+    is_pump_fun = meta.dex.lower() == "pump.fun"
+
+    if FILTERS.require_burn_or_lock and not is_pump_fun:
         if meta.lp_burned_or_locked_pct < FILTERS.min_lp_burned_or_locked_pct:
             return FilterResult(
                 False,
@@ -109,11 +107,10 @@ def check_supply_and_burn(meta: TokenMetadata) -> FilterResult:
                 "supply_filter",
             )
 
-    return FilterResult(True, "العرض ثابت والسيولة محروقة/مقفلة بما يكفي", "supply_filter")
+    return FilterResult(True, "العرض ثابت والسيولة محروقة/مقفلة بما يكفي (أو غير منطبق لـ Pump.fun)", "supply_filter")
 
 
 def check_distribution(meta: TokenMetadata) -> FilterResult:
-    """التحقق من عدم شبه بونزي في التوزيع."""
     if meta.dev_wallet_pct > FILTERS.max_dev_wallet_pct:
         return FilterResult(
             False,
@@ -141,7 +138,6 @@ def check_distribution(meta: TokenMetadata) -> FilterResult:
 
 
 def check_fungibility_and_transferability(meta: TokenMetadata) -> FilterResult:
-    """التحقق من قابلية الاستبدال والتحويل الحر."""
     if FILTERS.require_standard_token_program and not meta.is_standard_spl_token:
         return FilterResult(
             False,
@@ -167,7 +163,6 @@ def check_fungibility_and_transferability(meta: TokenMetadata) -> FilterResult:
 
 
 def run_all_onchain_filters(meta: TokenMetadata) -> FilterResult:
-    """يشغّل كل الفلاتر بالترتيب ويتوقف عند أول رفض (fail-fast) لتوفير الموارد."""
     checks = [
         check_forbidden_keywords,
         check_supply_and_burn,
