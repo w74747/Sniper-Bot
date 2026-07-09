@@ -18,10 +18,12 @@ GOPLUS_APP_KEY = os.getenv("GOPLUS_APP_KEY", "").strip()
 GOPLUS_APP_SECRET = os.getenv("GOPLUS_APP_SECRET", "").strip()
 GOPLUS_API_BASE = "https://api.gopluslabs.io/api/v1"
 
-# Helius: يُستخدم حصرياً لـ WebSocket Subscriptions (logsSubscribe)
-# لأن Alchemy لا يدعم أي طريقة Subscribe على Solana حالياً (تأكدنا من هذا فعلياً)
-# Alchemy يبقى للـ HTTP RPC العادي (getAccountInfo, getTokenLargestAccounts...) كما هو
+# Helius: يُستخدم لـ WebSocket Subscriptions (logsSubscribe) ولجلب تفاصيل
+# المعاملة فوراً (getTransaction) — لأن نفس المزود الذي "رأى" الحدث أولاً
+# عبر الإشعار غالباً يملك تفاصيله فوراً، بخلاف مزود مختلف (Alchemy) قد
+# يتأخر في فهرسة نفس المعاملة ببضع أجزاء من الثانية.
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", "").strip()
+HELIUS_RPC_URL = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
 HELIUS_WS_URL = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
 
 # Jupiter: تم إيقاف quote-api.jup.ag، والنطاق الجديد api.jup.ag يتطلب مفتاح API مجاني
