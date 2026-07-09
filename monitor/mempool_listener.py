@@ -42,8 +42,7 @@ def _get_all_instructions(tx_data: dict) -> list:
 
     هذا ضروري لأن الاستدعاء الفعلي لتعليمة Pump.fun/Raydium غالباً لا يكون
     تعليمة أساسية مباشرة، بل يُستدعى عبر برنامج وسيط (aggregator/router)
-    كـ Cross-Program Invocation (CPI) — وهذا هو السبب الفعلي وراء فشل
-    التحليل بصمت في كل المحاولات السابقة رغم نجاح جلب المعاملة نفسها.
+    كـ Cross-Program Invocation (CPI).
     """
     instructions = list(tx_data.get("transaction", {}).get("message", {}).get("instructions", []))
 
@@ -341,9 +340,53 @@ async def fetch_and_parse_transaction(signature: str) -> Optional[dict]:
 
 
 async def _run_single_websocket_session():
-    """جلسة اتصال واحدة — تُغلق تلقائياً عند أي انقطاع، ويلتقطها المستدعي لإعادة المحاولة."""
+    """
+    جلسة اتصال واحدة — تُغلق تلقائياً عند أي انقطاع، ويلتقطها المستدعي لإعادة المحاولة.
+
+    مهم: كل حدث مرشّح يُعالج في مهمة (Task) منفصلة تماماً عبر asyncio.create_task،
+    بدل معالجته تسلسلياً داخل نفس الحلقة. هذا ضروري لأن المعالجة الكاملة لحدث
+    واحد (Alchemy + GoPlus + Jupiter، مع احتمال إعادة محاولات) قد تستغرق ثوانٍ،
+    ومعدل وصول الأحداث الفعلي على الشبكة أسرع من ذلك بكثير — فلو عالجنا تسلسلياً
+    لتراكمت الأحداث في طابور غير مرئي وبدا الأمر وكأن شيئاً لا يحدث، رغم أن
+    الكود يعمل، فقط ببطء شديد خلف الكواليس دون أي رسالة تدل على ذلك.
+
+    نستخدم Semaphore لتحديد عدد المعالجات المتزامنة المسموحة (5 كحد أقصى)
+    لتفادي إغراق Alchemy/GoPlus/Jupiter بطلبات متزامنة كثيرة جداً دفعة واحدة.
+    """
     subscribe_id = 1
     pending_subscriptions = {}  # id -> program_id، لمطابقة كل رد تأكيد بالبرنامج الصحيح
+    processing_semaphore = asyncio.Semaphore(5)
+    background_tasks: set = set()
+
+    async def _process_event_with_timing(signature: str):
+        """يعالج حدثاً واحداً مع تسجيل التوقيت الكامل، ضمن حد التزامن المسموح."""
+        async with processing_semaphore:
+            start_time = asyncio.get_event_loop().time()
+            try:
+                pool_event = await fetch_and_parse_transaction(signature)
+                if pool_event:
+                    logger.info(
+                        f"تم استخراج بيانات عملة جديدة فعلياً: {pool_event.get('mint_address')} "
+                        f"(معالجة الاستخراج: {asyncio.get_event_loop().time() - start_time:.1f}s)"
+                    )
+                    await process_new_pool_event(pool_event)
+                    logger.info(
+                        f"انتهت المعالجة الكاملة لـ {signature[:16]}... "
+                        f"(الوقت الكلي: {asyncio.get_event_loop().time() - start_time:.1f}s)"
+                    )
+                else:
+                    logger.debug(
+                        f"اجتاز الفلتر لكن فشل التحليل: {signature[:16]}... "
+                        f"({asyncio.get_event_loop().time() - start_time:.1f}s)"
+                    )
+            except Exception as e:
+                # حماية ضرورية: بدون هذا، أي استثناء داخل مهمة خلفية (Task) يُفقد
+                # صامتاً تماماً في asyncio ولا يظهر في أي سجل إطلاقاً.
+                logger.error(
+                    f"خطأ غير متوقع أثناء معالجة {signature[:16]}...: "
+                    f"{type(e).__name__}: {e} "
+                    f"(بعد {asyncio.get_event_loop().time() - start_time:.1f}s)"
+                )
 
     async with websockets.connect(
         HELIUS_WS_URL, ping_interval=20, ping_timeout=20
@@ -402,14 +445,12 @@ async def _run_single_websocket_session():
                 if not is_pump_create and not is_raydium_init:
                     continue
 
-                logger.info(f"حدث مرشّح مكتشف: {signature[:16]}...")
+                logger.debug(f"حدث مرشّح مكتشف: {signature[:16]}...")
 
-                pool_event = await fetch_and_parse_transaction(signature)
-                if pool_event:
-                    logger.info(f"تم استخراج بيانات عملة جديدة فعلياً: {pool_event.get('mint_address')}")
-                    await process_new_pool_event(pool_event)
-                else:
-                    logger.debug(f"اجتاز الفلتر لكن فشل التحليل: {signature[:16]}...")
+                # معالجة في مهمة منفصلة — لا ننتظرها هنا، لنستمر باستقبال الأحداث التالية فوراً
+                task = asyncio.create_task(_process_event_with_timing(signature))
+                background_tasks.add(task)
+                task.add_done_callback(background_tasks.discard)
 
             except Exception as e:
                 logger.error(f"خطأ في معالجة رسالة واحدة: {type(e).__name__}: {e}")
