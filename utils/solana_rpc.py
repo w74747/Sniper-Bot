@@ -60,17 +60,6 @@ async def rpc_call(method: str, params: list, timeout: int = 20, max_retries: in
 async def get_transaction_via_helius(signature: str, max_retries: int = 8, retry_delay: float = 1.0) -> dict:
     """
     يجلب تفاصيل معاملة عبر Helius، مع إعادة محاولة عند رجوع النتيجة فارغة (None).
-
-    ملاحظة: بعد تجربة عدة قيم، اتضح أن الفارق الزمني بين لحظة إشعار logsSubscribe
-    ولحظة توفر تفاصيل المعاملة عبر getTransaction قد يصل لعدة ثوانٍ فعلياً، حتى
-    مع commitment=confirmed. لذلك نزيد عدد المحاولات إلى 8 بتأخير ثانية واحدة بينها
-    (حتى 8 ثوانٍ انتظار كحد أقصى)، مع تسجيل كل محاولة فاشلة لمعرفة عدد المحاولات
-    الفعلي المطلوب حتى تنجح، إن نجحت.
-
-    نستخدم "jsonParsed" بدل "json" لأن الصيغة الخام لا تحلّ عناوين الحسابات
-    المحمّلة عبر جداول البحث (Address Lookup Tables)، وهي شائعة جداً في
-    معاملات Pump.fun/Raydium الحديثة، وكانت السبب في خطأ "list index out
-    of range" الذي ظهر سابقاً عند محاولة تحليل الحسابات يدوياً.
     """
     for attempt in range(1, max_retries + 1):
         result = await rpc_call(
@@ -94,9 +83,39 @@ async def get_transaction_via_helius(signature: str, max_retries: int = 8, retry
     return None
 
 
+async def _rpc_call_with_retry(method: str, params_without_config: list, extra_config: dict = None, max_retries: int = 6, retry_delay: float = 0.8) -> dict:
+    """
+    غلاف عام لإعادة المحاولة عبر Helius مع commitment=confirmed، لأي استعلام
+    قد يُطلب فوراً بعد اكتشاف حساب/عملة جديدة جداً لم تُفهرَس بعد. هذا نفس
+    الحل الذي طبّقناه على get_transaction_via_helius، مُعمَّماً هنا ليشمل
+    getAccountInfo وgetTokenLargestAccounts أيضاً — فشل هذين الاستعلامين
+    بسبب نفس فارق الفهرسة كان يُسقط 100% من العملات المستخرجة حديثاً.
+    """
+    config = {"commitment": "confirmed"}
+    if extra_config:
+        config.update(extra_config)
+    full_params = params_without_config + [config]
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            result = await rpc_call(method, full_params, endpoint=HELIUS_RPC_URL)
+        except RuntimeError:
+            result = None
+
+        if result and (not isinstance(result, dict) or result.get("value") is not None):
+            return result
+
+        if attempt < max_retries:
+            await asyncio.sleep(retry_delay)
+
+    return await rpc_call(method, full_params, endpoint=HELIUS_RPC_URL)
+
+
 async def get_account_info_base64(address: str) -> str:
-    """يرجع بيانات الحساب مُرمّزة base64 (raw bytes) لعنوان معيّن."""
-    result = await rpc_call("getAccountInfo", [address, {"encoding": "base64"}])
+    """يرجع بيانات الحساب مُرمّزة base64 (raw bytes) لعنوان معيّن، مع إعادة محاولة عبر Helius."""
+    result = await _rpc_call_with_retry(
+        "getAccountInfo", [address], extra_config={"encoding": "base64"}
+    )
     if not result or not result.get("value"):
         raise ValueError(f"لا يوجد حساب فعّال على العنوان: {address}")
     return result["value"]["data"][0]
@@ -104,12 +123,10 @@ async def get_account_info_base64(address: str) -> str:
 
 async def get_token_largest_accounts(mint_address: str) -> list:
     """
-    يرجع قائمة أكبر 20 حاملاً لعملة معيّنة (address + amount + decimals).
-    ملاحظة: هذا يشمل عناوين ATA (Associated Token Accounts) الفعلية، وليس
-    بالضرورة "المالك" (owner wallet) مباشرة — قد تحتاج getAccountInfo إضافية
-    لكل عنوان لاستخراج owner الفعلي إذا احتجت دقة أعلى لاحقاً.
+    يرجع قائمة أكبر 20 حاملاً لعملة معيّنة (address + amount + decimals)،
+    مع إعادة محاولة عبر Helius لنفس سبب فارق الفهرسة.
     """
-    result = await rpc_call("getTokenLargestAccounts", [mint_address])
+    result = await _rpc_call_with_retry("getTokenLargestAccounts", [mint_address])
     if not result:
         return []
     return result.get("value", [])
