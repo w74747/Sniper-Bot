@@ -30,7 +30,6 @@ from utils.solana_rpc import (
 
 logger = logging.getLogger("mempool_listener")
 
-# عناوين البرامج المعروفة والثابتة على Solana Mainnet
 PUMP_FUN_PROGRAM_ID = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
 RAYDIUM_AMM_V4_PROGRAM_ID = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
 
@@ -38,10 +37,6 @@ MONITORED_PROGRAM_IDS = [PUMP_FUN_PROGRAM_ID, RAYDIUM_AMM_V4_PROGRAM_ID]
 
 
 def _get_all_instructions(tx_data: dict) -> list:
-    """
-    يجمع كل التعليمات القابلة للفحص من معاملة واحدة: التعليمات الأساسية
-    (message.instructions) + التعليمات المتداخلة (meta.innerInstructions).
-    """
     instructions = list(tx_data.get("transaction", {}).get("message", {}).get("instructions", []))
     inner_instructions = tx_data.get("meta", {}).get("innerInstructions", [])
     for group in inner_instructions:
@@ -49,37 +44,53 @@ def _get_all_instructions(tx_data: dict) -> list:
     return instructions
 
 
+def _extract_program_id(ix: dict, account_keys: list) -> str:
+    """يستخرج عنوان البرنامج، متوافقاً مع jsonParsed (نص مباشر) والصيغة الخام (فهرسة)."""
+    if "programId" in ix:
+        return ix["programId"]
+    idx = ix.get("programIdIndex")
+    if idx is None or idx >= len(account_keys):
+        return ""
+    key = account_keys[idx]
+    return key.get("pubkey") if isinstance(key, dict) else key
+
+
+def _extract_instruction_accounts(ix: dict, account_keys: list) -> list:
+    """يستخرج عناوين الحسابات، متوافقاً مع jsonParsed (نصوص) والصيغة الخام (فهرسة)."""
+    raw_accounts = ix.get("accounts", [])
+    if not raw_accounts:
+        return []
+    if isinstance(raw_accounts[0], str):
+        return raw_accounts
+    resolved = []
+    for idx in raw_accounts:
+        if idx is None or idx >= len(account_keys):
+            resolved.append("")
+            continue
+        key = account_keys[idx]
+        resolved.append(key.get("pubkey") if isinstance(key, dict) else key)
+    return resolved
+
+
 def parse_pump_fun_create_instruction(tx_data: dict) -> Optional[dict]:
-    """
-    يحلل معاملة "create" من Pump.fun لاستخراج بيانات العملة الجديدة.
-    """
+    """يحلل معاملة "create" من Pump.fun لاستخراج بيانات العملة الجديدة."""
     try:
         message = tx_data["transaction"]["message"]
         account_keys = message["accountKeys"]
         all_instructions = _get_all_instructions(tx_data)
 
         for ix in all_instructions:
-            program_id_index = ix.get("programIdIndex")
-            if program_id_index is None:
-                continue
-            program_id = account_keys[program_id_index]
-            if isinstance(program_id, dict):
-                program_id = program_id.get("pubkey", "")
-
+            program_id = _extract_program_id(ix, account_keys)
             if program_id != PUMP_FUN_PROGRAM_ID:
                 continue
 
-            ix_accounts = ix.get("accounts", [])
+            ix_accounts = _extract_instruction_accounts(ix, account_keys)
             if len(ix_accounts) < 8:
                 continue
 
-            def _resolve(idx):
-                key = account_keys[ix_accounts[idx]]
-                return key.get("pubkey") if isinstance(key, dict) else key
-
-            mint_address = _resolve(0)
-            bonding_curve = _resolve(2)
-            deployer_wallet = _resolve(7)
+            mint_address = ix_accounts[0]
+            bonding_curve = ix_accounts[2]
+            deployer_wallet = ix_accounts[7]
 
             return {
                 "mint_address": mint_address,
@@ -95,36 +106,24 @@ def parse_pump_fun_create_instruction(tx_data: dict) -> Optional[dict]:
 
 
 def parse_raydium_initialize_instruction(tx_data: dict) -> Optional[dict]:
-    """
-    يحلل معاملة "initialize2" من Raydium AMM V4 لاستخراج بيانات الـ pool الجديد.
-    """
+    """يحلل معاملة "initialize2" من Raydium AMM V4 لاستخراج بيانات الـ pool الجديد."""
     try:
         message = tx_data["transaction"]["message"]
         account_keys = message["accountKeys"]
         all_instructions = _get_all_instructions(tx_data)
 
         for ix in all_instructions:
-            program_id_index = ix.get("programIdIndex")
-            if program_id_index is None:
-                continue
-            program_id = account_keys[program_id_index]
-            if isinstance(program_id, dict):
-                program_id = program_id.get("pubkey", "")
-
+            program_id = _extract_program_id(ix, account_keys)
             if program_id != RAYDIUM_AMM_V4_PROGRAM_ID:
                 continue
 
-            ix_accounts = ix.get("accounts", [])
+            ix_accounts = _extract_instruction_accounts(ix, account_keys)
             if len(ix_accounts) < 10:
                 continue
 
-            def _resolve(idx):
-                key = account_keys[ix_accounts[idx]]
-                return key.get("pubkey") if isinstance(key, dict) else key
-
-            amm_address = _resolve(4)
-            lp_mint = _resolve(7)
-            coin_mint = _resolve(8)
+            amm_address = ix_accounts[4]
+            lp_mint = ix_accounts[7]
+            coin_mint = ix_accounts[8]
 
             logger.warning(
                 "تحليل Raydium initialize2 يستخدم مواقع حسابات غير مُختبرة بعد — "
@@ -145,9 +144,6 @@ def parse_raydium_initialize_instruction(tx_data: dict) -> Optional[dict]:
 
 
 async def fetch_token_metadata(pool_event: dict) -> TokenMetadata:
-    """
-    يبني TokenMetadata فعلياً من بيانات الحدث + استعلامات RPC حقيقية.
-    """
     mint_address = pool_event["mint_address"]
 
     mint_data_b64 = await get_account_info_base64(mint_address)
@@ -265,10 +261,6 @@ async def process_new_pool_event(pool_event: dict):
 
 
 async def fetch_and_parse_transaction(signature: str) -> Optional[dict]:
-    """
-    يجلب معاملة كاملة عبر توقيعها، ويحاول تحليلها كحدث Pump.fun أو Raydium.
-    يرجع pool_event جاهزاً لـ process_new_pool_event، أو None إذا لم يُتعرّف عليها.
-    """
     try:
         tx_data = await get_transaction_via_helius(signature)
     except Exception as e:
@@ -287,21 +279,14 @@ async def fetch_and_parse_transaction(signature: str) -> Optional[dict]:
     if event:
         return event
 
-    # تشخيص مؤقت: لماذا فشلت كلتا المحاولتين؟ نطبع كل البرامج التي ظهرت فعلياً
-    # في التعليمات (أساسية + متداخلة) لمقارنتها بعناوين البرامج التي نبحث عنها.
     try:
         message = tx_data["transaction"]["message"]
         account_keys = message["accountKeys"]
         all_instructions = _get_all_instructions(tx_data)
 
-        def _get_pid(ix):
-            idx = ix.get("programIdIndex")
-            if idx is None:
-                return "?"
-            key = account_keys[idx]
-            return key.get("pubkey") if isinstance(key, dict) else key
-
-        program_ids_found = sorted(set(_get_pid(ix) for ix in all_instructions))
+        program_ids_found = sorted(set(
+            _extract_program_id(ix, account_keys) for ix in all_instructions
+        ))
         logger.info(
             f"🔍 فشل التطابق لـ {signature[:16]}... — "
             f"عدد التعليمات: {len(all_instructions)}, "
@@ -314,11 +299,6 @@ async def fetch_and_parse_transaction(signature: str) -> Optional[dict]:
 
 
 async def _run_single_websocket_session():
-    """
-    جلسة اتصال واحدة — تُغلق تلقائياً عند أي انقطاع، ويلتقطها المستدعي لإعادة المحاولة.
-    كل حدث مرشّح يُعالج في مهمة (Task) منفصلة عبر asyncio.create_task،
-    مع مهلة قصوى صارمة (45 ثانية) لكل معالجة، ونبضة قلب دورية للتشخيص.
-    """
     subscribe_id = 1
     pending_subscriptions = {}
     processing_semaphore = asyncio.Semaphore(5)
@@ -433,11 +413,6 @@ async def _run_single_websocket_session():
 
 
 async def run_mempool_listener():
-    """
-    يشترك فعلياً عبر logsSubscribe في Helius WebSocket لمراقبة أي معاملة
-    تذكر برنامج Pump.fun أو Raydium AMM V4، ثم يجلب كل معاملة مطابقة
-    كاملة عبر getTransaction (عبر Helius أيضاً) لتحليلها واستخراج بيانات العملة الجديدة.
-    """
     init_watchlist_table()
     logger.info("بدء الاستماع لأحداث السيولة الجديدة...")
 
