@@ -7,31 +7,32 @@ import logging
 
 import aiohttp
 
-from config.settings import ALCHEMY_RPC_URL
+from config.settings import ALCHEMY_RPC_URL, HELIUS_RPC_URL
 
 logger = logging.getLogger("solana_rpc")
 
 
-async def rpc_call(method: str, params: list, timeout: int = 20, max_retries: int = 3) -> dict:
+async def rpc_call(method: str, params: list, timeout: int = 20, max_retries: int = 3, endpoint: str = None) -> dict:
     """
-    ينفّذ استدعاء JSON-RPC عام إلى Alchemy ويرجع حقل "result" من الاستجابة.
-    يعيد المحاولة تلقائياً عند أخطاء 503/429 المؤقتة (شائعة مع استعلامات ثقيلة
-    مثل getTokenLargestAccounts على عملات ضخمة الحجم كـ BONK)، بتأخير متزايد.
+    ينفّذ استدعاء JSON-RPC عام ويرجع حقل "result" من الاستجابة.
+    يستخدم Alchemy افتراضياً، أو أي رابط بديل يُمرَّر عبر endpoint (مثل Helius).
+    يعيد المحاولة تلقائياً عند أخطاء 503/429 المؤقتة، بتأخير متزايد.
     """
+    target_url = endpoint or ALCHEMY_RPC_URL
     payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
     last_error = None
 
     for attempt in range(1, max_retries + 1):
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(ALCHEMY_RPC_URL, json=payload, timeout=timeout) as resp:
+                async with session.post(target_url, json=payload, timeout=timeout) as resp:
                     if resp.status in (429, 503):
                         text = await resp.text()
                         last_error = RuntimeError(
                             f"RPC status {resp.status} في {method} (محاولة {attempt}/{max_retries}): {text[:200]}"
                         )
                         if attempt < max_retries:
-                            await asyncio.sleep(2 * attempt)  # تأخير متزايد: 2s, 4s, 6s...
+                            await asyncio.sleep(2 * attempt)
                             continue
                         raise last_error
 
@@ -56,6 +57,26 @@ async def rpc_call(method: str, params: list, timeout: int = 20, max_retries: in
     raise last_error
 
 
+async def get_transaction_via_helius(signature: str, max_retries: int = 3, retry_delay: float = 0.5) -> dict:
+    """
+    يجلب تفاصيل معاملة عبر Helius تحديداً (نفس المزود الذي أرسل إشعار logsSubscribe)،
+    مع إعادة محاولة قصيرة إذا رجعت النتيجة فارغة (None) — فارق فهرسة بسيط بين لحظة
+    الإشعار ولحظة توفر التفاصيل الكاملة شائع جداً حتى مع نفس المزود، ويُحل عادة
+    خلال أقل من ثانية واحدة من الانتظار وإعادة المحاولة.
+    """
+    for attempt in range(1, max_retries + 1):
+        result = await rpc_call(
+            "getTransaction",
+            [signature, {"encoding": "json", "maxSupportedTransactionVersion": 0}],
+            endpoint=HELIUS_RPC_URL,
+        )
+        if result:
+            return result
+        if attempt < max_retries:
+            await asyncio.sleep(retry_delay)
+    return None
+
+
 async def get_account_info_base64(address: str) -> str:
     """يرجع بيانات الحساب مُرمّزة base64 (raw bytes) لعنوان معيّن."""
     result = await rpc_call("getAccountInfo", [address, {"encoding": "base64"}])
@@ -67,9 +88,6 @@ async def get_account_info_base64(address: str) -> str:
 async def get_token_largest_accounts(mint_address: str) -> list:
     """
     يرجع قائمة أكبر 20 حاملاً لعملة معيّنة (address + amount + decimals).
-    ملاحظة: هذا يشمل عناوين ATA (Associated Token Accounts) الفعلية، وليس
-    بالضرورة "المالك" (owner wallet) مباشرة — قد تحتاج getAccountInfo إضافية
-    لكل عنوان لاستخراج owner الفعلي إذا احتجت دقة أعلى لاحقاً.
     """
     result = await rpc_call("getTokenLargestAccounts", [mint_address])
     if not result:
