@@ -319,23 +319,12 @@ async def fetch_and_parse_transaction(signature: str) -> Optional[dict]:
     return None
 
 
-async def run_mempool_listener():
-    """
-    يشترك فعلياً عبر logsSubscribe في Alchemy WebSocket لمراقبة أي معاملة
-    تذكر برنامج Pump.fun أو Raydium AMM V4، ثم يجلب كل معاملة مطابقة
-    كاملة عبر getTransaction لتحليلها واستخراج بيانات العملة الجديدة.
-
-    ملاحظة الأداء: logsSubscribe يرجع كل معاملة "تذكر" البرنامج، وليس فقط
-    معاملات إنشاء pool جديد (قد تشمل عمليات شراء/بيع عادية أيضاً) — لذلك
-    parse_pump_fun_create_instruction/parse_raydium_initialize_instruction
-    تتجاهلان صامتاً أي معاملة لا تحتوي فعلياً على تعليمة الإنشاء المطلوبة.
-    """
-    init_watchlist_table()
-    logger.info("بدء الاستماع لأحداث السيولة الجديدة...")
-
+async def _run_single_websocket_session():
+    """جلسة اتصال واحدة — تُغلق تلقائياً عند أي انقطاع، ويلتقطها المستدعي لإعادة المحاولة."""
     subscribe_id = 1
-    async with websockets.connect(ALCHEMY_WS_URL) as ws:
-        # اشتراك منفصل لكل برنامج مراقَب
+    async with websockets.connect(
+        ALCHEMY_WS_URL, ping_interval=20, ping_timeout=20
+    ) as ws:
         for program_id in MONITORED_PROGRAM_IDS:
             await ws.send(json.dumps({
                 "jsonrpc": "2.0",
@@ -348,11 +337,12 @@ async def run_mempool_listener():
             }))
             subscribe_id += 1
 
+        logger.info("تم الاشتراك بنجاح، بانتظار الأحداث...")
+
         async for message in ws:
             try:
                 data = json.loads(message)
 
-                # تجاهل ردود التأكيد الأولية للاشتراك (result = subscription id رقمي)
                 if "params" not in data:
                     continue
 
@@ -363,15 +353,41 @@ async def run_mempool_listener():
                 if not signature:
                     continue
 
-                # فلترة سريعة: نتجاهل صامتاً أي معاملة لا تحتوي كلمة تشير لإنشاء
-                # (توفير استدعاءات RPC غير ضرورية لكل معاملة شراء/بيع عادية)
                 logs_text = " ".join(logs).lower()
                 if "create" not in logs_text and "initialize2" not in logs_text:
                     continue
+
+                logger.info(f"حدث مرشّح مكتشف: {signature[:16]}...")
 
                 pool_event = await fetch_and_parse_transaction(signature)
                 if pool_event:
                     await process_new_pool_event(pool_event)
 
             except Exception as e:
-                logger.error(f"خطأ في معالجة حدث جديد: {e}")
+                logger.error(f"خطأ في معالجة رسالة واحدة: {type(e).__name__}: {e}")
+
+
+async def run_mempool_listener():
+    """
+    يشترك فعلياً عبر logsSubscribe في Alchemy WebSocket لمراقبة أي معاملة
+    تذكر برنامج Pump.fun أو Raydium AMM V4، ثم يجلب كل معاملة مطابقة
+    كاملة عبر getTransaction لتحليلها واستخراج بيانات العملة الجديدة.
+
+    يتضمن إعادة اتصال تلقائية عند أي انقطاع (شائع في اتصالات WebSocket
+    طويلة الأمد بسبب انتهاء مهلة الخمول أو مشاكل شبكة مؤقتة)، مع تسجيل
+    واضح لكل محاولة انقطاع/إعادة اتصال بدل الفشل الصامت.
+    """
+    init_watchlist_table()
+    logger.info("بدء الاستماع لأحداث السيولة الجديدة...")
+
+    reconnect_delay = 5
+    while True:
+        try:
+            await _run_single_websocket_session()
+        except (websockets.exceptions.ConnectionClosed, ConnectionResetError) as e:
+            logger.warning(f"انقطع اتصال WebSocket: {type(e).__name__}: {e} — إعادة الاتصال خلال {reconnect_delay}s")
+        except Exception as e:
+            logger.error(f"خطأ غير متوقع في جلسة WebSocket: {type(e).__name__}: {e} — إعادة الاتصال خلال {reconnect_delay}s")
+
+        await asyncio.sleep(reconnect_delay)
+        reconnect_delay = min(reconnect_delay * 2, 60)  # تأخير متزايد حتى حد أقصى 60 ثانية
