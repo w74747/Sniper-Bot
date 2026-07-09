@@ -28,7 +28,6 @@ from utils.solana_rpc import get_account_info_base64, get_token_largest_accounts
 
 logger = logging.getLogger("mempool_listener")
 
-# عناوين البرامج المعروفة والثابتة على Solana Mainnet
 PUMP_FUN_PROGRAM_ID = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
 RAYDIUM_AMM_V4_PROGRAM_ID = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
 
@@ -36,29 +35,14 @@ MONITORED_PROGRAM_IDS = [PUMP_FUN_PROGRAM_ID, RAYDIUM_AMM_V4_PROGRAM_ID]
 
 
 def _get_all_instructions(tx_data: dict) -> list:
-    """
-    يجمع كل التعليمات القابلة للفحص من معاملة واحدة: التعليمات الأساسية
-    (message.instructions) + التعليمات المتداخلة (meta.innerInstructions).
-    """
     instructions = list(tx_data.get("transaction", {}).get("message", {}).get("instructions", []))
-
     inner_instructions = tx_data.get("meta", {}).get("innerInstructions", [])
     for group in inner_instructions:
         instructions.extend(group.get("instructions", []))
-
     return instructions
 
 
 def parse_pump_fun_create_instruction(tx_data: dict) -> Optional[dict]:
-    """
-    يحلل معاملة "create" من Pump.fun لاستخراج بيانات العملة الجديدة.
-
-    بنية تعليمة "create" في Pump.fun (موثّقة علناً وثابتة نسبياً):
-    الحسابات بالترتيب: [mint, mint_authority, bonding_curve,
-    associated_bonding_curve, global, mpl_token_metadata, metadata,
-    user (=المطور/الموقّع), system_program, token_program,
-    associated_token_program, rent, event_authority, program]
-    """
     try:
         message = tx_data["transaction"]["message"]
         account_keys = message["accountKeys"]
@@ -101,12 +85,6 @@ def parse_pump_fun_create_instruction(tx_data: dict) -> Optional[dict]:
 
 
 def parse_raydium_initialize_instruction(tx_data: dict) -> Optional[dict]:
-    """
-    يحلل معاملة "initialize2" من Raydium AMM V4 لاستخراج بيانات الـ pool الجديد.
-
-    تحذير صريح: بنية حسابات Raydium initialize2 أكثر تعقيداً وتغيّراً من
-    Pump.fun. المواقع أدناه تقديرية وغير مُختبرة على معاملة حقيقية بعد.
-    """
     try:
         message = tx_data["transaction"]["message"]
         account_keys = message["accountKeys"]
@@ -154,9 +132,6 @@ def parse_raydium_initialize_instruction(tx_data: dict) -> Optional[dict]:
 
 
 async def fetch_token_metadata(pool_event: dict) -> TokenMetadata:
-    """
-    يبني TokenMetadata فعلياً من بيانات الحدث + استعلامات RPC حقيقية.
-    """
     mint_address = pool_event["mint_address"]
 
     mint_data_b64 = await get_account_info_base64(mint_address)
@@ -276,6 +251,7 @@ async def process_new_pool_event(pool_event: dict):
 async def fetch_and_parse_transaction(signature: str) -> Optional[dict]:
     """
     يجلب معاملة كاملة عبر توقيعها، ويحاول تحليلها كحدث Pump.fun أو Raydium.
+    يرجع pool_event جاهزاً لـ process_new_pool_event، أو None إذا لم يُتعرّف عليها.
     """
     try:
         tx_data = await rpc_call(
@@ -287,6 +263,7 @@ async def fetch_and_parse_transaction(signature: str) -> Optional[dict]:
         return None
 
     if not tx_data:
+        logger.info(f"⚠️ getTransaction رجع فارغاً (None) لـ {signature[:16]}...")
         return None
 
     event = parse_pump_fun_create_instruction(tx_data)
@@ -296,6 +273,29 @@ async def fetch_and_parse_transaction(signature: str) -> Optional[dict]:
     event = parse_raydium_initialize_instruction(tx_data)
     if event:
         return event
+
+    # تشخيص مؤقت: لماذا فشلت كلتا المحاولتين؟ نطبع كل البرامج التي ظهرت فعلياً
+    # في التعليمات (أساسية + متداخلة) لمقارنتها بعناوين البرامج التي نبحث عنها.
+    try:
+        message = tx_data["transaction"]["message"]
+        account_keys = message["accountKeys"]
+        all_instructions = _get_all_instructions(tx_data)
+
+        def _get_pid(ix):
+            idx = ix.get("programIdIndex")
+            if idx is None:
+                return "?"
+            key = account_keys[idx]
+            return key.get("pubkey") if isinstance(key, dict) else key
+
+        program_ids_found = sorted(set(_get_pid(ix) for ix in all_instructions))
+        logger.info(
+            f"🔍 فشل التطابق لـ {signature[:16]}... — "
+            f"عدد التعليمات: {len(all_instructions)}, "
+            f"البرامج الموجودة فعلياً: {program_ids_found}"
+        )
+    except Exception as diag_error:
+        logger.info(f"🔍 فشل التشخيص نفسه لـ {signature[:16]}...: {diag_error}")
 
     return None
 
@@ -312,14 +312,6 @@ async def _run_single_websocket_session():
     background_tasks: set = set()
 
     async def _process_event_with_timing(signature: str):
-        """
-        يعالج حدثاً واحداً مع تسجيل التوقيت الكامل، ضمن حد التزامن المسموح.
-
-        ملاحظة حرجة: نستخدم asyncio.wait_for بمهلة قصوى صارمة (45 ثانية) لأن
-        بعض العمليات المتزامنة (blocking) مثل استدعاءات sqlite3 يمكن أن تُجمّد
-        المعالجة بصمت تماماً بدون أي استثناء يظهر — هذا "شبكة أمان" تضمن ظهور
-        نتيجة ما (نجاح/فشل/انتهاء مهلة) خلال وقت محدد مهما حدث، بدل الصمت الأبدي.
-        """
         async with processing_semaphore:
             start_time = asyncio.get_event_loop().time()
             try:
@@ -337,7 +329,6 @@ async def _run_single_websocket_session():
                 )
 
     async def _do_process(signature: str, start_time: float):
-        """الجسم الفعلي للمعالجة — مفصول لتسهيل تطبيق المهلة القصوى عليه بالكامل."""
         pool_event = await fetch_and_parse_transaction(signature)
         if pool_event:
             logger.info(
@@ -356,7 +347,6 @@ async def _run_single_websocket_session():
             )
 
     async def _heartbeat_logger():
-        """يطبع كل 15 ثانية عدد المهام قيد المعالجة حالياً — يوضح إن كان هناك تراكم (backlog) ضخم."""
         while True:
             await asyncio.sleep(15)
             logger.info(f"💓 نبضة: {len(background_tasks)} مهمة قيد المعالجة حالياً")
@@ -430,11 +420,6 @@ async def _run_single_websocket_session():
 
 
 async def run_mempool_listener():
-    """
-    يشترك فعلياً عبر logsSubscribe في Helius WebSocket لمراقبة أي معاملة
-    تذكر برنامج Pump.fun أو Raydium AMM V4، ثم يجلب كل معاملة مطابقة
-    كاملة عبر getTransaction (عبر Alchemy) لتحليلها واستخراج بيانات العملة الجديدة.
-    """
     init_watchlist_table()
     logger.info("بدء الاستماع لأحداث السيولة الجديدة...")
 
