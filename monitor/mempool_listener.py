@@ -45,7 +45,6 @@ def _get_all_instructions(tx_data: dict) -> list:
 
 
 def _extract_program_id(ix: dict, account_keys: list) -> str:
-    """يستخرج عنوان البرنامج، متوافقاً مع jsonParsed (نص مباشر) والصيغة الخام (فهرسة)."""
     if "programId" in ix:
         return ix["programId"]
     idx = ix.get("programIdIndex")
@@ -56,7 +55,6 @@ def _extract_program_id(ix: dict, account_keys: list) -> str:
 
 
 def _extract_instruction_accounts(ix: dict, account_keys: list) -> list:
-    """يستخرج عناوين الحسابات، متوافقاً مع jsonParsed (نصوص) والصيغة الخام (فهرسة)."""
     raw_accounts = ix.get("accounts", [])
     if not raw_accounts:
         return []
@@ -144,18 +142,37 @@ def parse_raydium_initialize_instruction(tx_data: dict) -> Optional[dict]:
 
 
 async def fetch_token_metadata(pool_event: dict) -> TokenMetadata:
+    """يبني TokenMetadata فعلياً من بيانات الحدث + استعلامات RPC حقيقية."""
     mint_address = pool_event["mint_address"]
 
     mint_data_b64 = await get_account_info_base64(mint_address)
     mint_info = parse_spl_mint_account(mint_data_b64)
 
-    largest_accounts = await get_token_largest_accounts(mint_address)
+    # ملاحظة: بعض عملات Pump.fun الحديثة تُصدَر عبر برنامج Token-2022، وقد
+    # يرفضها getTokenLargestAccounts بخطأ "not a Token mint" رغم أنها عملة
+    # صالحة فعلياً. نتعامل مع هذا بأمان (fail-safe): لا نُسقط العملة بخطأ
+    # تقني، لكن أيضاً لا نفترض توزيعاً "نظيفاً" (0%) — بل نضع قيماً تجعل
+    # الفلاتر اللاحقة ترفضها لعدم القدرة على التحقق.
+    try:
+        largest_accounts = await get_token_largest_accounts(mint_address)
+        holder_data_available = True
+    except Exception as e:
+        logger.warning(
+            f"تعذّر قراءة توزيع الحيازة لـ {mint_address} (قد تكون Token-2022): {e}"
+        )
+        largest_accounts = []
+        holder_data_available = False
+
     total_supply = mint_info["supply"] or 1
 
     deployer_wallet = pool_event.get("deployer_wallet", "")
     dev_wallet_pct = 0.0
     top_holder_pct_excluding_lp = 0.0
     lp_ata_addresses = set(pool_event.get("known_lp_token_accounts", []))
+
+    if not holder_data_available:
+        dev_wallet_pct = 100.0
+        top_holder_pct_excluding_lp = 100.0
 
     for holder in largest_accounts:
         amount = float(holder.get("amount", 0))
