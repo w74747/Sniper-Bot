@@ -60,14 +60,22 @@ async def rpc_call(method: str, params: list, timeout: int = 20, max_retries: in
 async def get_transaction_via_helius(signature: str, max_retries: int = 3, retry_delay: float = 0.5) -> dict:
     """
     يجلب تفاصيل معاملة عبر Helius تحديداً (نفس المزود الذي أرسل إشعار logsSubscribe)،
-    مع إعادة محاولة قصيرة إذا رجعت النتيجة فارغة (None) — فارق فهرسة بسيط بين لحظة
-    الإشعار ولحظة توفر التفاصيل الكاملة شائع جداً حتى مع نفس المزود، ويُحل عادة
-    خلال أقل من ثانية واحدة من الانتظار وإعادة المحاولة.
+    مع إعادة محاولة قصيرة إذا رجعت النتيجة فارغة (None).
+
+    مهم جداً: نمرر commitment="confirmed" صراحة ليطابق مستوى التأكيد الذي
+    اشتركنا به في logsSubscribe. بدون هذا، getTransaction يستخدم الافتراضي
+    "finalized" (أعلى مستوى تأكيد)، وهو أبطأ بعدة ثوانٍ من "confirmed" —
+    وهذا هو السبب الفعلي وراء رجوع النتيجة فارغة (None) في كل المحاولات
+    السابقة، وليس فارق فهرسة بين المزودين كما افترضنا سابقاً.
     """
     for attempt in range(1, max_retries + 1):
         result = await rpc_call(
             "getTransaction",
-            [signature, {"encoding": "json", "maxSupportedTransactionVersion": 0}],
+            [signature, {
+                "encoding": "json",
+                "maxSupportedTransactionVersion": 0,
+                "commitment": "confirmed",
+            }],
             endpoint=HELIUS_RPC_URL,
         )
         if result:
