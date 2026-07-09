@@ -49,7 +49,7 @@ class TokenMetadata:
     name: str
     symbol: str
     description: str = ""
-    dex: str = ""  # "pump.fun" أو "raydium" — يُستخدم لتكييف فحص حرق LP حسب طبيعة كل منصة
+    dex: str = ""
 
     total_supply: float = 0
     mint_authority_active: bool = True
@@ -58,6 +58,7 @@ class TokenMetadata:
     lp_burned_or_locked_pct: float = 0.0
     dev_wallet_pct: float = 0.0
     top_holder_pct_excluding_lp: float = 0.0
+    holder_data_available: bool = True  # False إذا تعذّرت قراءة التوزيع (مثل Token-2022)
 
     is_standard_spl_token: bool = True
     has_transfer_restriction_hooks: bool = False
@@ -81,13 +82,8 @@ def check_forbidden_keywords(meta: TokenMetadata) -> FilterResult:
 
 def check_supply_and_burn(meta: TokenMetadata) -> FilterResult:
     """
-    التحقق من آلية الانكماش/العرض الثابت.
-
-    ملاحظة مهمة لـ Pump.fun: هذه المنصة لا تستخدم "LP تقليدية" قابلة للحرق —
-    السيولة محبوسة داخل Bonding Curve نفسه ولا يمكن لأي طرف (حتى المطور)
-    سحبها يدوياً، بخلاف Raydium حيث حرق LP هو الضمانة الأساسية ضد Rug Pull.
-    لذلك نتجاوز شرط "حرق LP" لعملات Pump.fun تحديداً (لأنه غير منطبق على
-    تصميمها من الأساس)، بينما نُبقي هذا الشرط صارماً وإلزامياً لـ Raydium.
+    ملاحظة مهمة لـ Pump.fun: السيولة محبوسة داخل Bonding Curve، لا LP تقليدية
+    قابلة للحرق. نتجاوز شرط "حرق LP" لعملات Pump.fun، ونُبقيه صارماً لـ Raydium.
     """
     if FILTERS.require_fixed_supply and meta.mint_authority_active:
         return FilterResult(
@@ -111,6 +107,24 @@ def check_supply_and_burn(meta: TokenMetadata) -> FilterResult:
 
 
 def check_distribution(meta: TokenMetadata) -> FilterResult:
+    """
+    ملاحظة: عندما تتعذّر قراءة توزيع الحيازة فعلياً (holder_data_available=False،
+    غالباً بسبب Token-2022)، لا نرفض تلقائياً بافتراض "100% ملكية مطور" —
+    بل نتخطى فحص النسب هنا ونعتمد على GoPlus كشبكة أمان بديلة.
+    """
+    if not meta.holder_data_available:
+        if FILTERS.forbid_referral_mechanics and meta.has_referral_or_commission_function:
+            return FilterResult(
+                False,
+                "العقد يحتوي على آلية إحالة/عمولة داخلية — مؤشر تصميم شبيه بالبونزي",
+                "distribution_filter",
+            )
+        return FilterResult(
+            True,
+            "تعذّرت قراءة توزيع الحيازة تقنياً (Token-2022) — الاعتماد على GoPlus كفحص بديل",
+            "distribution_filter",
+        )
+
     if meta.dev_wallet_pct > FILTERS.max_dev_wallet_pct:
         return FilterResult(
             False,
