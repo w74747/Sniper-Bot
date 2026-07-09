@@ -445,7 +445,7 @@ async def _run_single_websocket_session():
                 if not is_pump_create and not is_raydium_init:
                     continue
 
-                logger.debug(f"حدث مرشّح مكتشف: {signature[:16]}...")
+                logger.info(f"حدث مرشّح مكتشف: {signature[:16]}...")
 
                 # معالجة في مهمة منفصلة — لا ننتظرها هنا، لنستمر باستقبال الأحداث التالية فوراً
                 task = asyncio.create_task(_process_event_with_timing(signature))
