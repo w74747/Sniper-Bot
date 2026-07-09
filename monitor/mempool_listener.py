@@ -212,6 +212,7 @@ async def fetch_token_metadata(pool_event: dict) -> TokenMetadata:
         name=pool_event.get("name", ""),
         symbol=pool_event.get("symbol", ""),
         description=pool_event.get("description", ""),
+        dex=pool_event.get("dex", ""),
         total_supply=total_supply,
         mint_authority_active=mint_info["mint_authority_active"],
         freeze_authority_active=mint_info["freeze_authority_active"],
