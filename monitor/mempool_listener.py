@@ -142,7 +142,12 @@ def parse_raydium_initialize_instruction(tx_data: dict) -> Optional[dict]:
 
 
 async def fetch_token_metadata(pool_event: dict) -> TokenMetadata:
-    """يبني TokenMetadata فعلياً من بيانات الحدث + استعلامات RPC حقيقية."""
+    """
+    يبني TokenMetadata فعلياً من بيانات الحدث + استعلامات RPC حقيقية:
+    1. getAccountInfo على mint address → فك تشفير mint_authority/freeze_authority/supply
+    2. getTokenLargestAccounts على mint address → حساب نسبة محفظة المطور وأكبر حامل
+    3. getTokenLargestAccounts على lp_mint_address (إن توفر) → نسبة حرق/قفل السيولة
+    """
     mint_address = pool_event["mint_address"]
 
     mint_data_b64 = await get_account_info_base64(mint_address)
@@ -150,9 +155,8 @@ async def fetch_token_metadata(pool_event: dict) -> TokenMetadata:
 
     # ملاحظة: بعض عملات Pump.fun الحديثة تُصدَر عبر برنامج Token-2022، وقد
     # يرفضها getTokenLargestAccounts بخطأ "not a Token mint" رغم أنها عملة
-    # صالحة فعلياً. نتعامل مع هذا بأمان (fail-safe): لا نُسقط العملة بخطأ
-    # تقني، لكن أيضاً لا نفترض توزيعاً "نظيفاً" (0%) — بل نضع قيماً تجعل
-    # الفلاتر اللاحقة ترفضها لعدم القدرة على التحقق.
+    # صالحة فعلياً. لا نُسقط العملة بخطأ تقني، بل نمرّر holder_data_available
+    # = False للفلتر ليقرر بنفسه بدل افتراض قيمة خاطئة هنا.
     try:
         largest_accounts = await get_token_largest_accounts(mint_address)
         holder_data_available = True
@@ -169,10 +173,6 @@ async def fetch_token_metadata(pool_event: dict) -> TokenMetadata:
     dev_wallet_pct = 0.0
     top_holder_pct_excluding_lp = 0.0
     lp_ata_addresses = set(pool_event.get("known_lp_token_accounts", []))
-
-    if not holder_data_available:
-        dev_wallet_pct = 100.0
-        top_holder_pct_excluding_lp = 100.0
 
     for holder in largest_accounts:
         amount = float(holder.get("amount", 0))
@@ -219,6 +219,7 @@ async def fetch_token_metadata(pool_event: dict) -> TokenMetadata:
         lp_burned_or_locked_pct=lp_burned_or_locked_pct,
         dev_wallet_pct=dev_wallet_pct,
         top_holder_pct_excluding_lp=top_holder_pct_excluding_lp,
+        holder_data_available=holder_data_available,
         is_standard_spl_token=True,
         has_transfer_restriction_hooks=False,
         has_referral_or_commission_function=False,
@@ -279,6 +280,10 @@ async def process_new_pool_event(pool_event: dict):
 
 
 async def fetch_and_parse_transaction(signature: str) -> Optional[dict]:
+    """
+    يجلب معاملة كاملة عبر توقيعها، ويحاول تحليلها كحدث Pump.fun أو Raydium.
+    يرجع pool_event جاهزاً لـ process_new_pool_event، أو None إذا لم يُتعرّف عليها.
+    """
     try:
         tx_data = await get_transaction_via_helius(signature)
     except Exception as e:
@@ -317,6 +322,11 @@ async def fetch_and_parse_transaction(signature: str) -> Optional[dict]:
 
 
 async def _run_single_websocket_session():
+    """
+    جلسة اتصال واحدة — تُغلق تلقائياً عند أي انقطاع، ويلتقطها المستدعي لإعادة المحاولة.
+    كل حدث مرشّح يُعالج في مهمة (Task) منفصلة عبر asyncio.create_task،
+    مع مهلة قصوى صارمة (45 ثانية) لكل معالجة، ونبضة قلب دورية للتشخيص.
+    """
     subscribe_id = 1
     pending_subscriptions = {}
     processing_semaphore = asyncio.Semaphore(5)
@@ -431,6 +441,11 @@ async def _run_single_websocket_session():
 
 
 async def run_mempool_listener():
+    """
+    يشترك فعلياً عبر logsSubscribe في Helius WebSocket لمراقبة أي معاملة
+    تذكر برنامج Pump.fun أو Raydium AMM V4، ثم يجلب كل معاملة مطابقة
+    كاملة عبر getTransaction (عبر Helius أيضاً) لتحليلها واستخراج بيانات العملة الجديدة.
+    """
     init_watchlist_table()
     logger.info("بدء الاستماع لأحداث السيولة الجديدة...")
 
