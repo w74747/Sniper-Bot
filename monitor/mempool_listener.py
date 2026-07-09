@@ -24,10 +24,13 @@ from monitor.watchlist import (
     WatchlistEntry, add_to_watchlist, init_watchlist_table, is_already_in_watchlist,
 )
 from db.trades import has_seen_mint_before
-from utils.solana_rpc import get_account_info_base64, get_token_largest_accounts, rpc_call
+from utils.solana_rpc import (
+    get_account_info_base64, get_token_largest_accounts, rpc_call, get_transaction_via_helius,
+)
 
 logger = logging.getLogger("mempool_listener")
 
+# عناوين البرامج المعروفة والثابتة على Solana Mainnet
 PUMP_FUN_PROGRAM_ID = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
 RAYDIUM_AMM_V4_PROGRAM_ID = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
 
@@ -35,6 +38,10 @@ MONITORED_PROGRAM_IDS = [PUMP_FUN_PROGRAM_ID, RAYDIUM_AMM_V4_PROGRAM_ID]
 
 
 def _get_all_instructions(tx_data: dict) -> list:
+    """
+    يجمع كل التعليمات القابلة للفحص من معاملة واحدة: التعليمات الأساسية
+    (message.instructions) + التعليمات المتداخلة (meta.innerInstructions).
+    """
     instructions = list(tx_data.get("transaction", {}).get("message", {}).get("instructions", []))
     inner_instructions = tx_data.get("meta", {}).get("innerInstructions", [])
     for group in inner_instructions:
@@ -43,6 +50,9 @@ def _get_all_instructions(tx_data: dict) -> list:
 
 
 def parse_pump_fun_create_instruction(tx_data: dict) -> Optional[dict]:
+    """
+    يحلل معاملة "create" من Pump.fun لاستخراج بيانات العملة الجديدة.
+    """
     try:
         message = tx_data["transaction"]["message"]
         account_keys = message["accountKeys"]
@@ -85,6 +95,9 @@ def parse_pump_fun_create_instruction(tx_data: dict) -> Optional[dict]:
 
 
 def parse_raydium_initialize_instruction(tx_data: dict) -> Optional[dict]:
+    """
+    يحلل معاملة "initialize2" من Raydium AMM V4 لاستخراج بيانات الـ pool الجديد.
+    """
     try:
         message = tx_data["transaction"]["message"]
         account_keys = message["accountKeys"]
@@ -132,6 +145,9 @@ def parse_raydium_initialize_instruction(tx_data: dict) -> Optional[dict]:
 
 
 async def fetch_token_metadata(pool_event: dict) -> TokenMetadata:
+    """
+    يبني TokenMetadata فعلياً من بيانات الحدث + استعلامات RPC حقيقية.
+    """
     mint_address = pool_event["mint_address"]
 
     mint_data_b64 = await get_account_info_base64(mint_address)
@@ -254,10 +270,7 @@ async def fetch_and_parse_transaction(signature: str) -> Optional[dict]:
     يرجع pool_event جاهزاً لـ process_new_pool_event، أو None إذا لم يُتعرّف عليها.
     """
     try:
-        tx_data = await rpc_call(
-            "getTransaction",
-            [signature, {"encoding": "json", "maxSupportedTransactionVersion": 0}],
-        )
+        tx_data = await get_transaction_via_helius(signature)
     except Exception as e:
         logger.debug(f"تعذّر جلب المعاملة {signature}: {e}")
         return None
@@ -420,6 +433,11 @@ async def _run_single_websocket_session():
 
 
 async def run_mempool_listener():
+    """
+    يشترك فعلياً عبر logsSubscribe في Helius WebSocket لمراقبة أي معاملة
+    تذكر برنامج Pump.fun أو Raydium AMM V4، ثم يجلب كل معاملة مطابقة
+    كاملة عبر getTransaction (عبر Helius أيضاً) لتحليلها واستخراج بيانات العملة الجديدة.
+    """
     init_watchlist_table()
     logger.info("بدء الاستماع لأحداث السيولة الجديدة...")
 
