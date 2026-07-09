@@ -1,6 +1,6 @@
 """
 الاستماع لأحداث إطلاق سيولة جديدة (تهيئة pool جديد على Raydium/Pump.fun)
-عبر Alchemy WebSocket، ثم تشغيل كل الفلاتر
+عبر Helius WebSocket، ثم تشغيل كل الفلاتر
 بالترتيب: كلمات محظورة → on-chain → سمعة/GoPlus → محاكاة بيع.
 
 عند اجتياز كل الفلاتر: إضافة العملة إلى watchlist (وليس شراء فوري) —
@@ -13,7 +13,7 @@ from typing import Optional
 
 import websockets
 
-from config.settings import ALCHEMY_WS_URL, DEX_ALLOWLIST
+from config.settings import HELIUS_WS_URL, DEX_ALLOWLIST
 from filters.onchain_filters import (
     TokenMetadata, run_all_onchain_filters, parse_spl_mint_account,
     KNOWN_BURN_ADDRESSES,
@@ -325,7 +325,7 @@ async def _run_single_websocket_session():
     pending_subscriptions = {}  # id -> program_id، لمطابقة كل رد تأكيد بالبرنامج الصحيح
 
     async with websockets.connect(
-        ALCHEMY_WS_URL, ping_interval=20, ping_timeout=20
+        HELIUS_WS_URL, ping_interval=20, ping_timeout=20
     ) as ws:
         for program_id in MONITORED_PROGRAM_IDS:
             pending_subscriptions[subscribe_id] = program_id
@@ -389,9 +389,9 @@ async def _run_single_websocket_session():
 
 async def run_mempool_listener():
     """
-    يشترك فعلياً عبر logsSubscribe في Alchemy WebSocket لمراقبة أي معاملة
+    يشترك فعلياً عبر logsSubscribe في Helius WebSocket لمراقبة أي معاملة
     تذكر برنامج Pump.fun أو Raydium AMM V4، ثم يجلب كل معاملة مطابقة
-    كاملة عبر getTransaction لتحليلها واستخراج بيانات العملة الجديدة.
+    كاملة عبر getTransaction (عبر Alchemy) لتحليلها واستخراج بيانات العملة الجديدة.
 
     يتضمن إعادة اتصال تلقائية عند أي انقطاع (شائع في اتصالات WebSocket
     طويلة الأمد بسبب انتهاء مهلة الخمول أو مشاكل شبكة مؤقتة)، مع تسجيل
