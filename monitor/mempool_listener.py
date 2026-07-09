@@ -322,10 +322,13 @@ async def fetch_and_parse_transaction(signature: str) -> Optional[dict]:
 async def _run_single_websocket_session():
     """جلسة اتصال واحدة — تُغلق تلقائياً عند أي انقطاع، ويلتقطها المستدعي لإعادة المحاولة."""
     subscribe_id = 1
+    pending_subscriptions = {}  # id -> program_id، لمطابقة كل رد تأكيد بالبرنامج الصحيح
+
     async with websockets.connect(
         ALCHEMY_WS_URL, ping_interval=20, ping_timeout=20
     ) as ws:
         for program_id in MONITORED_PROGRAM_IDS:
+            pending_subscriptions[subscribe_id] = program_id
             await ws.send(json.dumps({
                 "jsonrpc": "2.0",
                 "id": subscribe_id,
@@ -337,13 +340,30 @@ async def _run_single_websocket_session():
             }))
             subscribe_id += 1
 
-        logger.info("تم الاشتراك بنجاح، بانتظار الأحداث...")
+        confirmed_count = 0
+        expected_count = len(MONITORED_PROGRAM_IDS)
 
         async for message in ws:
             try:
                 data = json.loads(message)
 
+                # التحقق الصريح من ردود تأكيد/فشل الاشتراك (قبل بدء استقبال logs الفعلية)
+                if confirmed_count < expected_count and "id" in data and "params" not in data:
+                    req_id = data.get("id")
+                    program_id = pending_subscriptions.get(req_id, "غير معروف")
+                    if "error" in data:
+                        logger.error(
+                            f"فشل الاشتراك في برنامج {program_id}: {data['error']}"
+                        )
+                    elif "result" in data:
+                        logger.info(
+                            f"نجح الاشتراك في برنامج {program_id} (subscription id: {data['result']})"
+                        )
+                    confirmed_count += 1
+                    continue
+
                 if "params" not in data:
+                    logger.debug(f"رسالة غير متوقعة من WebSocket تم تجاهلها: {message[:200]}")
                     continue
 
                 value = data["params"].get("result", {}).get("value", {})
