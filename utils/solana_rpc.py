@@ -57,31 +57,40 @@ async def rpc_call(method: str, params: list, timeout: int = 20, max_retries: in
     raise last_error
 
 
-async def get_transaction_via_helius(signature: str, max_retries: int = 3, retry_delay: float = 0.5) -> dict:
+async def get_transaction_via_helius(signature: str, max_retries: int = 8, retry_delay: float = 1.0) -> dict:
     """
-    يجلب تفاصيل معاملة عبر Helius تحديداً (نفس المزود الذي أرسل إشعار logsSubscribe)،
-    مع إعادة محاولة قصيرة إذا رجعت النتيجة فارغة (None).
+    يجلب تفاصيل معاملة عبر Helius، مع إعادة محاولة عند رجوع النتيجة فارغة (None).
 
-    مهم جداً: نمرر commitment="confirmed" صراحة ليطابق مستوى التأكيد الذي
-    اشتركنا به في logsSubscribe. بدون هذا، getTransaction يستخدم الافتراضي
-    "finalized" (أعلى مستوى تأكيد)، وهو أبطأ بعدة ثوانٍ من "confirmed" —
-    وهذا هو السبب الفعلي وراء رجوع النتيجة فارغة (None) في كل المحاولات
-    السابقة، وليس فارق فهرسة بين المزودين كما افترضنا سابقاً.
+    ملاحظة: بعد تجربة عدة قيم، اتضح أن الفارق الزمني بين لحظة إشعار logsSubscribe
+    ولحظة توفر تفاصيل المعاملة عبر getTransaction قد يصل لعدة ثوانٍ فعلياً، حتى
+    مع commitment=confirmed. لذلك نزيد عدد المحاولات إلى 8 بتأخير ثانية واحدة بينها
+    (حتى 8 ثوانٍ انتظار كحد أقصى)، مع تسجيل كل محاولة فاشلة لمعرفة عدد المحاولات
+    الفعلي المطلوب حتى تنجح، إن نجحت.
+
+    نستخدم "jsonParsed" بدل "json" لأن الصيغة الخام لا تحلّ عناوين الحسابات
+    المحمّلة عبر جداول البحث (Address Lookup Tables)، وهي شائعة جداً في
+    معاملات Pump.fun/Raydium الحديثة، وكانت السبب في خطأ "list index out
+    of range" الذي ظهر سابقاً عند محاولة تحليل الحسابات يدوياً.
     """
     for attempt in range(1, max_retries + 1):
         result = await rpc_call(
             "getTransaction",
             [signature, {
-                "encoding": "json",
+                "encoding": "jsonParsed",
                 "maxSupportedTransactionVersion": 0,
                 "commitment": "confirmed",
             }],
             endpoint=HELIUS_RPC_URL,
         )
         if result:
+            if attempt > 1:
+                logger.info(f"✅ نجح جلب {signature[:16]}... في المحاولة رقم {attempt}")
             return result
+        logger.debug(f"محاولة {attempt}/{max_retries} فارغة لـ {signature[:16]}...")
         if attempt < max_retries:
             await asyncio.sleep(retry_delay)
+
+    logger.info(f"⚠️ استُنفدت كل المحاولات ({max_retries}) بدون نتيجة لـ {signature[:16]}...")
     return None
 
 
@@ -96,6 +105,9 @@ async def get_account_info_base64(address: str) -> str:
 async def get_token_largest_accounts(mint_address: str) -> list:
     """
     يرجع قائمة أكبر 20 حاملاً لعملة معيّنة (address + amount + decimals).
+    ملاحظة: هذا يشمل عناوين ATA (Associated Token Accounts) الفعلية، وليس
+    بالضرورة "المالك" (owner wallet) مباشرة — قد تحتاج getAccountInfo إضافية
+    لكل عنوان لاستخراج owner الفعلي إذا احتجت دقة أعلى لاحقاً.
     """
     result = await rpc_call("getTokenLargestAccounts", [mint_address])
     if not result:
