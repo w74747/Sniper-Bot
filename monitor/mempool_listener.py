@@ -35,6 +35,25 @@ RAYDIUM_AMM_V4_PROGRAM_ID = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
 MONITORED_PROGRAM_IDS = [PUMP_FUN_PROGRAM_ID, RAYDIUM_AMM_V4_PROGRAM_ID]
 
 
+def _get_all_instructions(tx_data: dict) -> list:
+    """
+    يجمع كل التعليمات القابلة للفحص من معاملة واحدة: التعليمات الأساسية
+    (message.instructions) + التعليمات المتداخلة (meta.innerInstructions).
+
+    هذا ضروري لأن الاستدعاء الفعلي لتعليمة Pump.fun/Raydium غالباً لا يكون
+    تعليمة أساسية مباشرة، بل يُستدعى عبر برنامج وسيط (aggregator/router)
+    كـ Cross-Program Invocation (CPI) — وهذا هو السبب الفعلي وراء فشل
+    التحليل بصمت في كل المحاولات السابقة رغم نجاح جلب المعاملة نفسها.
+    """
+    instructions = list(tx_data.get("transaction", {}).get("message", {}).get("instructions", []))
+
+    inner_instructions = tx_data.get("meta", {}).get("innerInstructions", [])
+    for group in inner_instructions:
+        instructions.extend(group.get("instructions", []))
+
+    return instructions
+
+
 def parse_pump_fun_create_instruction(tx_data: dict) -> Optional[dict]:
     """
     يحلل معاملة "create" من Pump.fun لاستخراج بيانات العملة الجديدة.
@@ -45,7 +64,7 @@ def parse_pump_fun_create_instruction(tx_data: dict) -> Optional[dict]:
     user (=المطور/الموقّع), system_program, token_program,
     associated_token_program, rent, event_authority, program]
 
-    نبحث في transaction.message.instructions عن تعليمة موجّهة لبرنامج
+    نبحث في كل التعليمات (أساسية + متداخلة) عن تعليمة موجّهة لبرنامج
     Pump.fun، ونستخرج account[0] كـ mint و account[7] كمطور (user).
 
     ملاحظة: هذا الترتيب مبني على IDL منشور علناً لـ Pump.fun، لكن أي
@@ -55,8 +74,9 @@ def parse_pump_fun_create_instruction(tx_data: dict) -> Optional[dict]:
     try:
         message = tx_data["transaction"]["message"]
         account_keys = message["accountKeys"]
+        all_instructions = _get_all_instructions(tx_data)
 
-        for ix in message["instructions"]:
+        for ix in all_instructions:
             program_id_index = ix.get("programIdIndex")
             if program_id_index is None:
                 continue
@@ -111,8 +131,9 @@ def parse_raydium_initialize_instruction(tx_data: dict) -> Optional[dict]:
     try:
         message = tx_data["transaction"]["message"]
         account_keys = message["accountKeys"]
+        all_instructions = _get_all_instructions(tx_data)
 
-        for ix in message["instructions"]:
+        for ix in all_instructions:
             program_id_index = ix.get("programIdIndex")
             if program_id_index is None:
                 continue
