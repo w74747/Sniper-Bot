@@ -6,7 +6,6 @@ import os
 from dataclasses import dataclass, field
 from typing import List
 
-# ── مفاتيح API (تُقرأ من متغيرات البيئة .env — لا تضع مفاتيح حقيقية هنا مباشرة) ──
 ALCHEMY_API_KEY = os.getenv("ALCHEMY_API_KEY", "")
 ALCHEMY_RPC_URL = f"https://solana-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}"
 ALCHEMY_WS_URL = f"wss://solana-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}"
@@ -22,12 +21,9 @@ HELIUS_WS_URL = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
 JUPITER_API_KEY = os.getenv("JUPITER_API_KEY", "")
 JUPITER_API_BASE = "https://api.jup.ag"
 
-# Birdeye: مصدر احتياطي جزئي (سعر فقط، فريتيره المجاني لا يشمل حجم/شراء-بيع)
-# معطّل حالياً بانتظار تفعيله لاحقاً بعد تحقيق إيرادات — اتركه فارغاً
 BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY", "").strip()
 BIRDEYE_API_BASE = "https://public-api.birdeye.so"
 
-# DexScreener: المصدر الأساسي لبيانات الزخم — مجاني بالكامل بدون مفتاح
 DEXSCREENER_API_BASE = "https://api.dexscreener.com"
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -39,8 +35,6 @@ USE_DEVNET = os.getenv("USE_DEVNET", "true").lower() == "true"
 
 @dataclass
 class FilterThresholds:
-    """عتبات الفلترة عند اللحظة صفر (فلاتر آلية فورية قابلة للقياس)."""
-
     require_fixed_supply: bool = True
     require_burn_or_lock: bool = True
     min_lp_burned_or_locked_pct: float = 95.0
@@ -66,8 +60,6 @@ class FilterThresholds:
 
 @dataclass
 class WatchlistSettings:
-    """إعدادات مرحلة الانتظار والمراجعة بعد الفلترة الآلية (24-72 ساعة)."""
-
     min_watch_hours: int = 24
     max_watch_hours: int = 72
     min_organic_holders_growth: int = 50
@@ -76,8 +68,6 @@ class WatchlistSettings:
 
 @dataclass
 class ExitStrategySettings:
-    """إعدادات إدارة الصفقة بعد الدخول."""
-
     take_profit_first_leg_pct: float = 100.0
     trailing_stop_pct: float = 15.0
     max_slippage_pct: float = 5.0
@@ -92,8 +82,7 @@ class ExitStrategySettings:
 class MomentumSettings:
     """
     عتبات رصد "الانطلاق الصاروخي" في أول دقائق — منفصلة تماماً عن فلاتر
-    الأمان (GoPlus) وفلاتر watchlist طويلة الأمد. هذه تجيب سؤالاً مختلفاً:
-    "هل هذه العملة تتحرك بقوة الآن؟" وليس "هل هي آمنة تقنياً؟".
+    الأمان (GoPlus) وفلاتر watchlist طويلة الأمد.
     """
     min_price_change_m5_pct: float = 30.0
     min_buy_sell_ratio_m5: float = 2.0
@@ -106,9 +95,22 @@ MOMENTUM = MomentumSettings()
 
 
 @dataclass
-class PostTradeMonitorSettings:
-    """إعدادات المراقبة بعد الدخول (الطبقتان: on-chain آلية + خارجية دورية)."""
+class FastTrackSettings:
+    """
+    إعدادات "المسار السريع" — دخول فوري متى ظهر زخم صاروخي حقيقي (momentum)
+    مع اجتياز فحوصات الأمان الأساسية (GoPlus + محاكاة البيع)، بدل انتظار
+    24-72 ساعة الكاملة. يعمل بالتوازي مع watchlist العادي دون التأثير عليه.
+    """
+    enabled: bool = True
+    max_entry_age_minutes: int = 60
+    check_interval_seconds: int = 30
 
+
+FAST_TRACK = FastTrackSettings()
+
+
+@dataclass
+class PostTradeMonitorSettings:
     onchain_check_interval_seconds: int = 5
     external_check_interval_minutes: int = 60
 
