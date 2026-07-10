@@ -1,1 +1,1 @@
-worker: python reset_db.py
+worker: python main.py
