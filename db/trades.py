@@ -47,8 +47,94 @@ def init_db(db_path: str = DB_PATH):
             FOREIGN KEY(trade_id) REFERENCES trades(id)
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS screening_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp REAL,
+            mint_address TEXT,
+            symbol TEXT,
+            dex TEXT,
+            decision TEXT,        -- rejected / added_to_watchlist
+            stage TEXT,           -- onchain / reputation / sell_simulation
+            reason TEXT
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_screening_timestamp ON screening_log(timestamp)"
+    )
     conn.commit()
     conn.close()
+
+
+def record_screening_result(
+    mint_address: str,
+    symbol: str,
+    dex: str,
+    decision: str,
+    stage: str,
+    reason: str,
+    db_path: str = DB_PATH,
+):
+    """
+    يسجّل كل قرار فحص (رفض أو قبول) بشكل دائم في قاعدة البيانات — بدل الاعتماد
+    فقط على نص اللوج الذي تفقده أدوات مثل Railway بعد فترة قصيرة بسبب كثرة
+    الأسطر. هذا يسمح باستعلامات إحصائية دقيقة عن أي فترة زمنية مهما طالت.
+    """
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """INSERT INTO screening_log
+           (timestamp, mint_address, symbol, dex, decision, stage, reason)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (time.time(), mint_address, symbol, dex, decision, stage, reason),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_screening_stats(hours: int = 24, db_path: str = DB_PATH) -> dict:
+    """
+    يرجع ملخصاً إحصائياً لكل قرارات الفحص خلال آخر عدد ساعات محدد:
+    - إجمالي عدد الفحوصات
+    - عدد المضافة لـ watchlist مقابل المرفوضة
+    - أكثر 10 أسباب رفض تكراراً (لمعرفة أين "عنق الزجاجة" الحالي دون قراءة آلاف الأسطر)
+    """
+    cutoff = time.time() - (hours * 3600)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+
+    total = conn.execute(
+        "SELECT COUNT(*) as c FROM screening_log WHERE timestamp > ?", (cutoff,)
+    ).fetchone()["c"]
+
+    by_decision = conn.execute(
+        """SELECT decision, COUNT(*) as c FROM screening_log
+           WHERE timestamp > ? GROUP BY decision ORDER BY c DESC""",
+        (cutoff,),
+    ).fetchall()
+
+    top_reasons = conn.execute(
+        """SELECT reason, COUNT(*) as c FROM screening_log
+           WHERE timestamp > ? AND decision = 'rejected'
+           GROUP BY reason ORDER BY c DESC LIMIT 10""",
+        (cutoff,),
+    ).fetchall()
+
+    added_list = conn.execute(
+        """SELECT mint_address, symbol, timestamp FROM screening_log
+           WHERE timestamp > ? AND decision = 'added_to_watchlist'
+           ORDER BY timestamp DESC""",
+        (cutoff,),
+    ).fetchall()
+
+    conn.close()
+
+    return {
+        "period_hours": hours,
+        "total_screened": total,
+        "by_decision": [dict(r) for r in by_decision],
+        "top_rejection_reasons": [dict(r) for r in top_reasons],
+        "added_to_watchlist": [dict(r) for r in added_list],
+    }
 
 
 @dataclass
