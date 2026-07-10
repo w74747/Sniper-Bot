@@ -24,7 +24,7 @@ from utils.solana_rpc import get_token_largest_accounts, rpc_call
 
 logger = logging.getLogger("watchlist")
 
-TOTAL_BOT_CAPITAL_SOL = 1.0
+TOTAL_BOT_CAPITAL_SOL = 0.265
 
 
 def init_watchlist_table(db_path: str = DB_PATH):
