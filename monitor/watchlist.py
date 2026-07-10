@@ -164,6 +164,9 @@ async def evaluate_fast_track_entry(entry: dict) -> Optional[tuple[str, str]]:
 
     momentum_ok, momentum_reason = await check_momentum(entry["mint_address"])
     if not momentum_ok:
+        # تسجيل تشخيصي مؤقت (INFO بدل الصمت الكامل): نحتاج رؤية الأرقام
+        # الفعلية لمعايرة عتبات MOMENTUM بذكاء بدل التخمين النظري.
+        logger.info(f"📊 [{entry['symbol']}] لا زخم كافٍ بعد: {momentum_reason}")
         return None
 
     security_ok, security_reason = await run_security_checks(
