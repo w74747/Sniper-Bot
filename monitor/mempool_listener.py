@@ -23,7 +23,7 @@ from filters.sell_simulation import simulate_sell, evaluate_simulation_result
 from monitor.watchlist import (
     WatchlistEntry, add_to_watchlist, init_watchlist_table, is_already_in_watchlist,
 )
-from db.trades import has_seen_mint_before
+from db.trades import has_seen_mint_before, record_screening_result
 from utils.solana_rpc import (
     get_account_info_base64, get_token_largest_accounts, rpc_call, get_transaction_via_helius,
 )
@@ -142,21 +142,12 @@ def parse_raydium_initialize_instruction(tx_data: dict) -> Optional[dict]:
 
 
 async def fetch_token_metadata(pool_event: dict) -> TokenMetadata:
-    """
-    يبني TokenMetadata فعلياً من بيانات الحدث + استعلامات RPC حقيقية:
-    1. getAccountInfo على mint address → فك تشفير mint_authority/freeze_authority/supply
-    2. getTokenLargestAccounts على mint address → حساب نسبة محفظة المطور وأكبر حامل
-    3. getTokenLargestAccounts على lp_mint_address (إن توفر) → نسبة حرق/قفل السيولة
-    """
+    """يبني TokenMetadata فعلياً من بيانات الحدث + استعلامات RPC حقيقية."""
     mint_address = pool_event["mint_address"]
 
     mint_data_b64 = await get_account_info_base64(mint_address)
     mint_info = parse_spl_mint_account(mint_data_b64)
 
-    # ملاحظة: بعض عملات Pump.fun الحديثة تُصدَر عبر برنامج Token-2022، وقد
-    # يرفضها getTokenLargestAccounts بخطأ "not a Token mint" رغم أنها عملة
-    # صالحة فعلياً. لا نُسقط العملة بخطأ تقني، بل نمرّر holder_data_available
-    # = False للفلتر ليقرر بنفسه بدل افتراض قيمة خاطئة هنا.
     try:
         largest_accounts = await get_token_largest_accounts(mint_address)
         holder_data_available = True
@@ -246,6 +237,9 @@ async def process_new_pool_event(pool_event: dict):
     onchain_result = run_all_onchain_filters(meta)
     if not onchain_result.passed:
         logger.info(f"رفض {meta.symbol}: {onchain_result.reason}")
+        record_screening_result(
+            mint_address, meta.symbol, dex, "rejected", "onchain", onchain_result.reason
+        )
         return
 
     reputation_ok, reputation_reason = await evaluate_reputation(
@@ -253,6 +247,9 @@ async def process_new_pool_event(pool_event: dict):
     )
     if not reputation_ok:
         logger.info(f"رفض {meta.symbol}: {reputation_reason}")
+        record_screening_result(
+            mint_address, meta.symbol, dex, "rejected", "reputation", reputation_reason
+        )
         return
 
     sim_result = await simulate_sell(
@@ -265,7 +262,15 @@ async def process_new_pool_event(pool_event: dict):
     sim_ok, sim_reason = evaluate_simulation_result(sim_result)
     if not sim_ok:
         logger.info(f"رفض {meta.symbol}: {sim_reason}")
+        record_screening_result(
+            mint_address, meta.symbol, dex, "rejected", "sell_simulation", sim_reason
+        )
         return
+
+    record_screening_result(
+        mint_address, meta.symbol, dex, "added_to_watchlist", "all_passed",
+        f"onchain={onchain_result.reason} | reputation={reputation_reason} | sell={sim_reason}"
+    )
 
     add_to_watchlist(WatchlistEntry(
         mint_address=meta.mint_address,
@@ -280,10 +285,6 @@ async def process_new_pool_event(pool_event: dict):
 
 
 async def fetch_and_parse_transaction(signature: str) -> Optional[dict]:
-    """
-    يجلب معاملة كاملة عبر توقيعها، ويحاول تحليلها كحدث Pump.fun أو Raydium.
-    يرجع pool_event جاهزاً لـ process_new_pool_event، أو None إذا لم يُتعرّف عليها.
-    """
     try:
         tx_data = await get_transaction_via_helius(signature)
     except Exception as e:
@@ -322,11 +323,6 @@ async def fetch_and_parse_transaction(signature: str) -> Optional[dict]:
 
 
 async def _run_single_websocket_session():
-    """
-    جلسة اتصال واحدة — تُغلق تلقائياً عند أي انقطاع، ويلتقطها المستدعي لإعادة المحاولة.
-    كل حدث مرشّح يُعالج في مهمة (Task) منفصلة عبر asyncio.create_task،
-    مع مهلة قصوى صارمة (45 ثانية) لكل معالجة، ونبضة قلب دورية للتشخيص.
-    """
     subscribe_id = 1
     pending_subscriptions = {}
     processing_semaphore = asyncio.Semaphore(5)
@@ -441,11 +437,6 @@ async def _run_single_websocket_session():
 
 
 async def run_mempool_listener():
-    """
-    يشترك فعلياً عبر logsSubscribe في Helius WebSocket لمراقبة أي معاملة
-    تذكر برنامج Pump.fun أو Raydium AMM V4، ثم يجلب كل معاملة مطابقة
-    كاملة عبر getTransaction (عبر Helius أيضاً) لتحليلها واستخراج بيانات العملة الجديدة.
-    """
     init_watchlist_table()
     logger.info("بدء الاستماع لأحداث السيولة الجديدة...")
 
