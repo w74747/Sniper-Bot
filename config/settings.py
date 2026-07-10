@@ -73,7 +73,7 @@ class ExitStrategySettings:
     max_slippage_pct: float = 5.0
     emergency_slippage_pct: float = 20.0
 
-    max_capital_pct_per_trade: float = 2.0
+    max_capital_pct_per_trade: float = 15.0
     max_consecutive_losses: int = 5
     circuit_breaker_cooldown_minutes: int = 120
 
