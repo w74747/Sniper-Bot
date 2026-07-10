@@ -1,10 +1,7 @@
 """
 الاستماع لأحداث إطلاق سيولة جديدة (تهيئة pool جديد على Raydium/Pump.fun)
-عبر Helius WebSocket، ثم تشغيل كل الفلاتر
-بالترتيب: كلمات محظورة → on-chain → سمعة/GoPlus → محاكاة بيع.
-
-عند اجتياز كل الفلاتر: إضافة العملة إلى watchlist (وليس شراء فوري) —
-حسب الاستراتيجية المتفق عليها.
+عبر Helius WebSocket، ثم تشغيل الفلاتر الآلية الفورية فقط.
+GoPlus ومحاكاة البيع يُؤجَّلان لمرحلة watchlist (بعد فترة انتظار كافية).
 """
 import asyncio
 import json
@@ -18,8 +15,6 @@ from filters.onchain_filters import (
     TokenMetadata, run_all_onchain_filters, parse_spl_mint_account,
     KNOWN_BURN_ADDRESSES,
 )
-from filters.reputation import evaluate_reputation
-from filters.sell_simulation import simulate_sell, evaluate_simulation_result
 from monitor.watchlist import (
     WatchlistEntry, add_to_watchlist, init_watchlist_table, is_already_in_watchlist,
 )
@@ -234,6 +229,8 @@ async def process_new_pool_event(pool_event: dict):
         logger.warning(f"تعذّر قراءة بيانات العقد لـ {pool_event.get('mint_address')}: {e}")
         return
 
+    # المرحلة 1: الفلاتر الآلية الفورية (كلمات + عرض + توزيع + قابلية تحويل)
+    # هذه فقط تعتمد على بيانات on-chain مباشرة، فلا تعاني من فارق الفهرسة.
     onchain_result = run_all_onchain_filters(meta)
     if not onchain_result.passed:
         logger.info(f"رفض {meta.symbol}: {onchain_result.reason}")
@@ -242,44 +239,26 @@ async def process_new_pool_event(pool_event: dict):
         )
         return
 
-    reputation_ok, reputation_reason = await evaluate_reputation(
-        meta.mint_address, pool_event.get("deployer_wallet", "")
-    )
-    if not reputation_ok:
-        logger.info(f"رفض {meta.symbol}: {reputation_reason}")
-        record_screening_result(
-            mint_address, meta.symbol, dex, "rejected", "reputation", reputation_reason
-        )
-        return
-
-    sim_result = await simulate_sell(
-        rpc_client=None,
-        wallet_pubkey="",
-        mint_address=meta.mint_address,
-        pool_address=pool_event.get("pool_address", ""),
-        test_amount_lamports=1_000_000,
-    )
-    sim_ok, sim_reason = evaluate_simulation_result(sim_result)
-    if not sim_ok:
-        logger.info(f"رفض {meta.symbol}: {sim_reason}")
-        record_screening_result(
-            mint_address, meta.symbol, dex, "rejected", "sell_simulation", sim_reason
-        )
-        return
-
+    # ملاحظة معمارية مهمة: فحص GoPlus ومحاكاة البيع لا يُشغَّلان هنا إطلاقاً.
+    # عملة عمرها ثوانٍ لا تملك GoPlus بيانات كافية عنها بعد (يفشل الفحص دائماً
+    # تقريباً بسبب فارق الفهرسة، وليس بسبب جودة العملة الفعلية) — هذا يتناقض
+    # مع استراتيجيتنا الأصلية (انتظار 24-72 ساعة قبل القرار النهائي). لذلك
+    # نضيف العملة لـ watchlist بمجرد اجتياز الفلاتر الآلية فقط، ونؤجّل فحص
+    # GoPlus/محاكاة البيع إلى monitor/watchlist.py حيث تُفحصان عند انتهاء
+    # فترة الانتظار الدنيا، حين تكون بياناتهما متوفرة فعلياً وذات معنى حقيقي.
     record_screening_result(
-        mint_address, meta.symbol, dex, "added_to_watchlist", "all_passed",
-        f"onchain={onchain_result.reason} | reputation={reputation_reason} | sell={sim_reason}"
+        mint_address, meta.symbol, dex, "added_to_watchlist", "onchain_passed",
+        f"اجتازت الفلاتر الآلية: {onchain_result.reason} — بانتظار فحص GoPlus/البيع لاحقاً"
     )
 
     add_to_watchlist(WatchlistEntry(
         mint_address=meta.mint_address,
         symbol=meta.symbol,
         pool_address=pool_event.get("pool_address", ""),
+        dex=dex,
+        deployer_wallet=pool_event.get("deployer_wallet", ""),
         initial_filter_report=json.dumps({
             "onchain": onchain_result.reason,
-            "reputation": reputation_reason,
-            "sell_simulation": sim_reason,
         }, ensure_ascii=False),
     ))
 
