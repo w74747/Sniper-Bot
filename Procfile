@@ -1,1 +1,1 @@
-worker: python print_stats.py
+worker: python main.py
