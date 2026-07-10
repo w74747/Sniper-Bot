@@ -16,15 +16,14 @@ import time
 from dataclasses import dataclass
 
 from config.settings import WATCHLIST, EXIT_STRATEGY
-from db.trades import DB_PATH
+from db.trades import DB_PATH, record_screening_result
 from trading.executor import execute_buy
+from filters.reputation import evaluate_reputation
+from filters.sell_simulation import simulate_sell, evaluate_simulation_result
 from utils.solana_rpc import get_token_largest_accounts, rpc_call
 
 logger = logging.getLogger("watchlist")
 
-# TODO: اربط هذا برصيد المحفظة الفعلي عبر getBalance بدل رقم ثابت.
-# هذا يمثل "إجمالي رأس المال المخصص للبوت بالـ SOL" — عدّله يدوياً حالياً
-# حسب المبلغ الذي خصصته فعلياً لهذه الاستراتيجية.
 TOTAL_BOT_CAPITAL_SOL = 1.0
 
 
@@ -37,10 +36,12 @@ def init_watchlist_table(db_path: str = DB_PATH):
             mint_address TEXT NOT NULL,
             symbol TEXT,
             pool_address TEXT,
+            dex TEXT,
+            deployer_wallet TEXT,
             added_at REAL,
             initial_filter_report TEXT,
             holders_at_add INTEGER DEFAULT 0,
-            status TEXT DEFAULT 'watching'  -- watching / approved / rejected / expired
+            status TEXT DEFAULT 'watching'
         )
     """)
     conn.commit()
@@ -54,16 +55,20 @@ class WatchlistEntry:
     pool_address: str
     initial_filter_report: str
     holders_at_add: int = 0
+    dex: str = ""
+    deployer_wallet: str = ""
 
 
 def add_to_watchlist(entry: WatchlistEntry, db_path: str = DB_PATH) -> int:
     conn = sqlite3.connect(db_path)
     cur = conn.execute(
         """INSERT INTO watchlist
-           (mint_address, symbol, pool_address, added_at, initial_filter_report, holders_at_add)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (entry.mint_address, entry.symbol, entry.pool_address, time.time(),
-         entry.initial_filter_report, entry.holders_at_add),
+           (mint_address, symbol, pool_address, dex, deployer_wallet,
+            added_at, initial_filter_report, holders_at_add)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (entry.mint_address, entry.symbol, entry.pool_address, entry.dex,
+         entry.deployer_wallet, time.time(), entry.initial_filter_report,
+         entry.holders_at_add),
     )
     conn.commit()
     watch_id = cur.lastrowid
@@ -73,7 +78,6 @@ def add_to_watchlist(entry: WatchlistEntry, db_path: str = DB_PATH) -> int:
 
 
 def is_already_in_watchlist(mint_address: str, db_path: str = DB_PATH) -> bool:
-    """يفحص إن كانت هذه العملة موجودة مسبقاً في watchlist بأي حالة (لمنع التكرار)."""
     conn = sqlite3.connect(db_path)
     row = conn.execute(
         "SELECT 1 FROM watchlist WHERE mint_address = ? LIMIT 1", (mint_address,)
@@ -83,21 +87,6 @@ def is_already_in_watchlist(mint_address: str, db_path: str = DB_PATH) -> bool:
 
 
 async def check_organic_growth(mint_address: str, holders_at_add: int) -> dict:
-    """
-    يفحص المؤشرات العضوية الحالية مقابل لحظة الإضافة للـ watchlist.
-
-    ملاحظة تنفيذية مهمة (تقريب معروف ومقصود):
-    getTokenLargestAccounts يرجع فقط أكبر 20 حاملاً كحد أقصى (قيد من Solana RPC
-    نفسه، وليس قيداً منّا) — لذلك "عدد الحاملين" هنا هو تقريب وليس عدّاً دقيقاً
-    لكل حاملي العملة. هذا كافٍ كمؤشر اتجاه (هل يتزايد التوزيع أم لا)، لكنه
-    ليس مصدراً دقيقاً 100%. لعدّ دقيق حقيقي، يلزم مصدر بيانات مخصص (indexer
-    كامل يتتبع كل حسابات التوكن)، وهو خارج نطاق استعلام RPC بسيط.
-
-    TODO المتبقي فعلاً (يحتاج خدمة خارجية، وليس RPC عادي):
-    - حجم تداول عضوي مقابل wash trading (يحتاج بيانات DEX تاريخية، مثل DexScreener API)
-    - نشاط GitHub فعلي إن وُجد رابط مستودع
-    - نمو متابعين Twitter/Telegram (لا بوتات)
-    """
     try:
         largest_accounts = await get_token_largest_accounts(mint_address)
         current_holders = sum(1 for h in largest_accounts if float(h.get("amount", 0)) > 0)
@@ -110,12 +99,21 @@ async def check_organic_growth(mint_address: str, holders_at_add: int) -> dict:
     return {
         "current_holders": current_holders,
         "holders_growth": holders_growth,
-        "organic_volume_ratio": None,  # TODO: يحتاج DexScreener API أو مصدر مشابه
+        "organic_volume_ratio": None,
     }
 
 
 async def evaluate_watchlist_entry(entry: dict) -> tuple[str, str]:
-    """يقرر: approved / rejected / still_watching"""
+    """
+    يقرر: approved / rejected / still_watching / expired
+
+    مهم: فحص GoPlus ومحاكاة البيع يُشغَّلان هنا فقط — بعد مرور فترة الانتظار
+    الدنيا (min_watch_hours) — وليس لحظة الاكتشاف الأولى. هذا إصلاح معماري
+    مقصود: عملة عمرها ثوانٍ لا تملك GoPlus بيانات كافية عنها بعد (يفشل
+    الفحص دائماً تقريباً بسبب فارق الفهرسة، وليس بسبب جودة العملة)، بينما
+    بعد ساعات من الانتظار تكون هذه البيانات متوفرة بيقين، فيصبح الفحص ذا
+    معنى حقيقي.
+    """
     age_hours = (time.time() - entry["added_at"]) / 3600
 
     growth_data = await check_organic_growth(entry["mint_address"], entry["holders_at_add"])
@@ -126,16 +124,32 @@ async def evaluate_watchlist_entry(entry: dict) -> tuple[str, str]:
     if age_hours < WATCHLIST.min_watch_hours:
         return "still_watching", f"لم تمر بعد فترة المراقبة الدنيا ({age_hours:.1f}h)"
 
-    if growth_data["holders_growth"] >= WATCHLIST.min_organic_holders_growth:
-        return "approved", (
-            f"نمو عضوي كافٍ: +{growth_data['holders_growth']} حامل جديد "
-            f"خلال {age_hours:.1f} ساعة"
-        )
+    if growth_data["holders_growth"] < WATCHLIST.min_organic_holders_growth:
+        if age_hours >= WATCHLIST.max_watch_hours:
+            return "expired", "انتهت فترة المراقبة القصوى دون نمو عضوي كافٍ"
+        return "still_watching", f"نمو عضوي غير كافٍ بعد ({age_hours:.1f}h)"
 
-    if age_hours >= WATCHLIST.max_watch_hours:
-        return "expired", "انتهت فترة المراقبة القصوى دون نمو عضوي كافٍ"
+    reputation_ok, reputation_reason = await evaluate_reputation(
+        entry["mint_address"], entry.get("deployer_wallet", "")
+    )
+    if not reputation_ok:
+        return "rejected", f"فشلت فحوصات السمعة بعد فترة الانتظار: {reputation_reason}"
 
-    return "still_watching", f"ما زالت قيد المراقبة ({age_hours:.1f}h)"
+    sim_result = await simulate_sell(
+        rpc_client=None,
+        wallet_pubkey="",
+        mint_address=entry["mint_address"],
+        pool_address=entry.get("pool_address", ""),
+        test_amount_lamports=1_000_000,
+    )
+    sim_ok, sim_reason = evaluate_simulation_result(sim_result)
+    if not sim_ok:
+        return "rejected", f"فشلت محاكاة البيع بعد فترة الانتظار: {sim_reason}"
+
+    return "approved", (
+        f"نمو عضوي كافٍ (+{growth_data['holders_growth']} حامل) + "
+        f"اجتازت GoPlus ومحاكاة البيع بعد {age_hours:.1f} ساعة"
+    )
 
 
 async def run_watchlist_loop(db_path: str = DB_PATH):
@@ -155,6 +169,10 @@ async def run_watchlist_loop(db_path: str = DB_PATH):
 
             if decision == "approved":
                 logger.info(f"موافقة على شراء {entry['symbol']}: {reason}")
+                record_screening_result(
+                    entry["mint_address"], entry["symbol"], entry.get("dex", ""),
+                    "added_to_watchlist", "watchlist_final_approval", reason,
+                )
                 capital_sol = TOTAL_BOT_CAPITAL_SOL * (EXIT_STRATEGY.max_capital_pct_per_trade / 100)
                 await execute_buy(
                     entry["mint_address"], entry["symbol"], entry["pool_address"],
@@ -165,6 +183,10 @@ async def run_watchlist_loop(db_path: str = DB_PATH):
 
             elif decision in ("rejected", "expired"):
                 logger.info(f"رفض/انتهاء {entry['symbol']}: {reason}")
+                record_screening_result(
+                    entry["mint_address"], entry["symbol"], entry.get("dex", ""),
+                    "rejected", f"watchlist_{decision}", reason,
+                )
                 _update_watchlist_status(entry["id"], decision, db_path)
 
         await asyncio.sleep(WATCHLIST.check_interval_minutes * 60)
