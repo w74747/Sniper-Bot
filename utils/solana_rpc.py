@@ -111,12 +111,15 @@ async def _rpc_call_with_retry(method: str, params_without_config: list, extra_c
         config.update(extra_config)
     full_params = params_without_config + [config]
 
+    last_error = None
     for attempt in range(1, max_retries + 1):
         endpoint = RPC_ENDPOINTS[(attempt - 1) % len(RPC_ENDPOINTS)] if RPC_ENDPOINTS else PRIMARY_RPC_URL
         try:
             result = await rpc_call(method, full_params, endpoint=endpoint, max_retries=1)
-        except RuntimeError:
-            result = None  # نتعامل مع الخطأ كنتيجة فارغة قابلة لإعادة المحاولة
+        except RuntimeError as e:
+            last_error = e
+            result = None
+            logger.info(f"🔄 محاولة {attempt}/{max_retries} فشلت على {endpoint[:45]}...: {str(e)[:150]}")
 
         if result and (not isinstance(result, dict) or result.get("value") is not None):
             return result
@@ -124,8 +127,11 @@ async def _rpc_call_with_retry(method: str, params_without_config: list, extra_c
         if attempt < max_retries:
             await asyncio.sleep(retry_delay)
 
-    # المحاولة الأخيرة: نرمي أي خطأ حقيقي بدل إخفائه، لتوضيح السبب النهائي
-    return await rpc_call(method, full_params, endpoint=PRIMARY_RPC_URL, max_retries=1)
+    # كل المحاولات فشلت على كل المزودين المتاحين — نرمي الخطأ الحقيقي الأخير
+    # بدل استدعاء إضافي زائد على مزود ثابت (كان هذا يُخفي السبب الحقيقي سابقاً)
+    if last_error:
+        raise last_error
+    return None
 
 
 async def get_account_info_base64(address: str) -> str:
