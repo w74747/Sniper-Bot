@@ -48,8 +48,9 @@ async def alert_auto_closed(
     proceeds_sol: float,
     profit_loss_sol: float,
     tx_hash: str,
+    cumulative: dict = None,
 ):
-    """رسالة إغلاق تلقائي — دليل on-chain قاطع، مع توثيق مالي كامل."""
+    """رسالة إغلاق تلقائي — دليل on-chain قاطع، مع توثيق مالي كامل + ملخص تراكمي."""
     pl_label = "ربح" if profit_loss_sol >= 0 else "خسارة"
     text = (
         f"🔴 <b>تم إغلاق الصفقة تلقائياً</b>\n\n"
@@ -60,6 +61,17 @@ async def alert_auto_closed(
         f"{pl_label}: {abs(profit_loss_sol):.4f} SOL\n\n"
         f"رابط المعاملة: https://solscan.io/tx/{tx_hash}"
     )
+
+    if cumulative:
+        total_label = "ربح" if cumulative["total_profit_loss_sol"] >= 0 else "خسارة"
+        text += (
+            f"\n\n📊 <b>الأداء التراكمي (كل الصفقات)</b>\n"
+            f"عدد الصفقات المغلقة: {cumulative['total_closed']} "
+            f"({cumulative['winning_trades']} رابحة / {cumulative['losing_trades']} خاسرة)\n"
+            f"نسبة الصفقات الرابحة: {cumulative['win_rate_pct']:.1f}%\n"
+            f"صافي {total_label} الإجمالي: {abs(cumulative['total_profit_loss_sol']):.4f} SOL"
+        )
+
     await send_telegram_message(text)
 
 
