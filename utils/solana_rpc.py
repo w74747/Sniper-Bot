@@ -7,7 +7,7 @@ import logging
 
 import aiohttp
 
-from config.settings import ALCHEMY_RPC_URL, HELIUS_RPC_URL
+from config.settings import ALCHEMY_RPC_URL, PRIMARY_RPC_URL, RPC_ENDPOINTS
 
 logger = logging.getLogger("solana_rpc")
 
@@ -32,7 +32,7 @@ async def rpc_call(method: str, params: list, timeout: int = 20, max_retries: in
                             f"RPC status {resp.status} في {method} (محاولة {attempt}/{max_retries}): {text[:200]}"
                         )
                         if attempt < max_retries:
-                            await asyncio.sleep(2 * attempt)
+                            await asyncio.sleep(2 * attempt)  # تأخير متزايد: 2s, 4s, 6s...
                             continue
                         raise last_error
 
@@ -60,17 +60,32 @@ async def rpc_call(method: str, params: list, timeout: int = 20, max_retries: in
 async def get_transaction_via_helius(signature: str, max_retries: int = 8, retry_delay: float = 1.0) -> dict:
     """
     يجلب تفاصيل معاملة عبر Helius، مع إعادة محاولة عند رجوع النتيجة فارغة (None).
+
+    ملاحظة: بعد تجربة عدة قيم، اتضح أن الفارق الزمني بين لحظة إشعار logsSubscribe
+    ولحظة توفر تفاصيل المعاملة عبر getTransaction قد يصل لعدة ثوانٍ فعلياً، حتى
+    مع commitment=confirmed. لذلك نزيد عدد المحاولات إلى 8 بتأخير ثانية واحدة بينها
+    (حتى 8 ثوانٍ انتظار كحد أقصى)، مع تسجيل كل محاولة فاشلة لمعرفة عدد المحاولات
+    الفعلي المطلوب حتى تنجح، إن نجحت.
     """
     for attempt in range(1, max_retries + 1):
-        result = await rpc_call(
-            "getTransaction",
-            [signature, {
-                "encoding": "jsonParsed",
-                "maxSupportedTransactionVersion": 0,
-                "commitment": "confirmed",
-            }],
-            endpoint=HELIUS_RPC_URL,
-        )
+        # تناوب بين كل المزودين المتاحين (Chainstack/Helius/Ankr) بدل الاصطدام
+        # بنفس المزود المرفوض مراراً — كل محاولة تجرّب المزود التالي في الدور.
+        endpoint = RPC_ENDPOINTS[(attempt - 1) % len(RPC_ENDPOINTS)] if RPC_ENDPOINTS else PRIMARY_RPC_URL
+        try:
+            result = await rpc_call(
+                "getTransaction",
+                [signature, {
+                    "encoding": "jsonParsed",
+                    "maxSupportedTransactionVersion": 0,
+                    "commitment": "confirmed",
+                }],
+                endpoint=endpoint,
+                max_retries=1,  # حاسم: rpc_call لا يجب أن تُعيد المحاولة داخلياً أيضاً —
+                                # هذه الدالة نفسها هي طبقة إعادة المحاولة الوحيدة (8 محاولات)
+            )
+        except RuntimeError:
+            result = None
+
         if result:
             if attempt > 1:
                 logger.info(f"✅ نجح جلب {signature[:16]}... في المحاولة رقم {attempt}")
@@ -97,10 +112,11 @@ async def _rpc_call_with_retry(method: str, params_without_config: list, extra_c
     full_params = params_without_config + [config]
 
     for attempt in range(1, max_retries + 1):
+        endpoint = RPC_ENDPOINTS[(attempt - 1) % len(RPC_ENDPOINTS)] if RPC_ENDPOINTS else PRIMARY_RPC_URL
         try:
-            result = await rpc_call(method, full_params, endpoint=HELIUS_RPC_URL)
+            result = await rpc_call(method, full_params, endpoint=endpoint, max_retries=1)
         except RuntimeError:
-            result = None
+            result = None  # نتعامل مع الخطأ كنتيجة فارغة قابلة لإعادة المحاولة
 
         if result and (not isinstance(result, dict) or result.get("value") is not None):
             return result
@@ -108,7 +124,8 @@ async def _rpc_call_with_retry(method: str, params_without_config: list, extra_c
         if attempt < max_retries:
             await asyncio.sleep(retry_delay)
 
-    return await rpc_call(method, full_params, endpoint=HELIUS_RPC_URL)
+    # المحاولة الأخيرة: نرمي أي خطأ حقيقي بدل إخفائه، لتوضيح السبب النهائي
+    return await rpc_call(method, full_params, endpoint=PRIMARY_RPC_URL, max_retries=1)
 
 
 async def get_account_info_base64(address: str) -> str:
@@ -121,12 +138,21 @@ async def get_account_info_base64(address: str) -> str:
     return result["value"]["data"][0]
 
 
-async def get_token_largest_accounts(mint_address: str) -> list:
+async def get_token_largest_accounts(mint_address: str, max_retries: int = 6) -> list:
     """
     يرجع قائمة أكبر 20 حاملاً لعملة معيّنة (address + amount + decimals)،
     مع إعادة محاولة عبر Helius لنفس سبب فارق الفهرسة.
+
+    ملاحظة كفاءة مهمة: القيمة الافتراضية (6 محاولات) مصمَّمة لعملات حديثة
+    جداً (لحظة الاكتشاف الأولى). عند إعادة فحص عملات موجودة في watchlist
+    منذ ساعات/أيام (لا تعاني من فارق فهرسة إطلاقاً)، مرّر max_retries=1
+    لتوفير استهلاك حصة Helius بشكل كبير (كانت إعادة الفحص الدورية لآلاف
+    العملات كل 15 دقيقة، بـ6 محاولات لكل واحدة، السبب الأكبر لاستنفاد
+    الحصة المجانية الشهرية بالكامل خلال ساعات فقط).
     """
-    result = await _rpc_call_with_retry("getTokenLargestAccounts", [mint_address])
+    result = await _rpc_call_with_retry(
+        "getTokenLargestAccounts", [mint_address], max_retries=max_retries
+    )
     if not result:
         return []
     return result.get("value", [])
@@ -138,3 +164,14 @@ async def get_signatures_for_address(address: str, limit: int = 50) -> list:
         "getSignaturesForAddress", [address, {"limit": limit}]
     )
     return result or []
+
+
+async def get_wallet_sol_balance(pubkey: str) -> float:
+    """
+    يرجع رصيد SOL الفعلي الحالي للمحفظة (وليس رقماً مضبوطاً يدوياً) — يُستخدم
+    لتحديد حجم كل صفقة ديناميكياً بناءً على الرصيد الحقيقي في تلك اللحظة،
+    بدل رقم ثابت يصبح قديماً بمجرد أول ربح أو خسارة.
+    """
+    result = await rpc_call("getBalance", [pubkey])
+    lamports = result.get("value", 0) if result else 0
+    return lamports / 1_000_000_000
