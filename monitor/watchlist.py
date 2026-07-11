@@ -112,11 +112,11 @@ async def check_organic_growth(mint_address: str, holders_at_add: int) -> dict:
     - نمو متابعين Twitter/Telegram (لا بوتات)
     """
     try:
-        # max_retries=3: يغطي كل المزودين المتاحين بالتناوب (Chainstack, Helius,
+        # max_retries=5: يغطي كل المزودين المتاحين بالتناوب (Chainstack, Helius,
         # Ankr) — ضروري لأن بعض المزودين (مثل Chainstack المجاني) لا يدعمون
         # هذه الدالة تحديداً (getTokenLargestAccounts) على العقد المشتركة،
         # فيجب الانتقال تلقائياً للمزود التالي بدل التوقف عند أول رفض.
-        largest_accounts = await get_token_largest_accounts(mint_address, max_retries=3)
+        largest_accounts = await get_token_largest_accounts(mint_address, max_retries=5)
         current_holders = sum(1 for h in largest_accounts if float(h.get("amount", 0)) > 0)
     except Exception as e:
         logger.warning(f"تعذّر فحص النمو العضوي لـ {mint_address}: {e}")
