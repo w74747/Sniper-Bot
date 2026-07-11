@@ -101,12 +101,13 @@ class ExitStrategySettings:
     """إعدادات إدارة الصفقة بعد الدخول."""
 
     take_profit_first_leg_pct: float = 100.0  # عند مضاعفة السعر، اسحب رأس المال الأساسي
-    trailing_stop_pct: float = 15.0           # وقف متحرك من أعلى قمة سعرية
+    trailing_stop_pct: float = 15.0           # وقف متحرك من أعلى قمة سعرية (بعد تحقيق ربح)
+    max_drawdown_from_entry_pct: float = 30.0  # وقف خسارة صارم من سعر الدخول مباشرة (حماية من انهيار بدون أي ربح سابق)
     max_slippage_pct: float = 5.0             # الانزلاق المسموح عند التنفيذ العادي
     emergency_slippage_pct: float = 20.0      # الانزلاق المسموح عند الإغلاق الطارئ (خروج مضمون)
 
     # حماية رأس المال
-    max_capital_pct_per_trade: float = 2.0    # أقصى نسبة من رأس المال الكلي لكل صفقة
+    max_capital_pct_per_trade: float = 10.0    # أقصى نسبة من رأس المال الكلي لكل صفقة
     max_consecutive_losses: int = 5           # قاطع الدائرة (Circuit Breaker)
     circuit_breaker_cooldown_minutes: int = 120
 
@@ -119,11 +120,14 @@ class MomentumSettings:
     "هل هذه العملة تتحرك بقوة الآن؟" وليس "هل هي آمنة تقنياً؟".
     """
     # نافذة القياس الأساسية (5 دقائق) — الأنسب لرصد زخم لحظي جداً
-    min_price_change_m5_pct: float = 30.0      # % ارتفاع سعر خلال آخر 5 دقائق
-    min_buy_sell_ratio_m5: float = 2.0         # نسبة الشراء للبيع (2.0 = ضعف الشراء مقارنة بالبيع)
-    min_volume_m5_usd: float = 5000.0          # حد أدنى لحجم التداول بالدولار خلال 5 دقائق
-    min_unique_buys_m5: int = 20               # حد أدنى لعدد معاملات الشراء خلال 5 دقائق
-    min_liquidity_usd: float = 3000.0          # حد أدنى للسيولة (حماية من التلاعب السهل بسعر عملة سيولتها ضئيلة)
+    # ملاحظة: القيم الأصلية (30%, 2.0, $5000, 20) كانت صارمة جداً — نادراً ما
+    # تتحقق كلها معاً، مما أدى لصفقات قليلة جداً رغم فحص آلاف العملات.
+    # خُفِّضت الآن لتوازن بين اقتناص فرص حقيقية وعدم قبول أي شيء عشوائي.
+    min_price_change_m5_pct: float = 15.0      # % ارتفاع سعر خلال آخر 5 دقائق
+    min_buy_sell_ratio_m5: float = 1.5         # نسبة الشراء للبيع
+    min_volume_m5_usd: float = 2000.0          # حد أدنى لحجم التداول بالدولار خلال 5 دقائق
+    min_unique_buys_m5: int = 10               # حد أدنى لعدد معاملات الشراء خلال 5 دقائق
+    min_liquidity_usd: float = 3000.0          # حد أدنى للسيولة (لا نخفّض هذا — حماية من التلاعب)
 
 
 MOMENTUM = MomentumSettings()
