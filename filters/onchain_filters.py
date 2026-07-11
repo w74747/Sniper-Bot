@@ -12,17 +12,29 @@ import struct
 from dataclasses import dataclass
 from typing import Optional
 
-from config.settings import FILTERS
+from config.settings import FILTERS, SHARIA_FILTERS_ENABLED
 
+# طول حساب Mint في SPL Token القياسي (بالبايت) — ثابت حسب مواصفة البروتوكول
 SPL_MINT_ACCOUNT_LEN = 82
 
+# عناوين "الحرق" المعروفة على Solana — أي عملة تُرسل لهذه العناوين تُعتبر محروقة فعلياً
 KNOWN_BURN_ADDRESSES = {
-    "11111111111111111111111111111111",
-    "1nc1nerator11111111111111111111111111111",
+    "11111111111111111111111111111111",  # System Program / null address
+    "1nc1nerator11111111111111111111111111111",  # عنوان حرق شائع
 }
 
 
 def parse_spl_mint_account(base64_data: str) -> dict:
+    """
+    يفك تشفير حساب Mint الخام (القادم من getAccountInfo) حسب تخطيط SPL Token الرسمي:
+
+    mint_authority: COption<Pubkey>   -> 4 بايت tag + 32 بايت pubkey = 36 بايت
+    supply: u64                       -> 8 بايت
+    decimals: u8                      -> 1 بايت
+    is_initialized: bool              -> 1 بايت
+    freeze_authority: COption<Pubkey> -> 4 بايت tag + 32 بايت pubkey = 36 بايت
+    المجموع: 82 بايت
+    """
     raw = base64.b64decode(base64_data)
     if len(raw) < SPL_MINT_ACCOUNT_LEN:
         raise ValueError(f"بيانات حساب Mint أقصر من المتوقع: {len(raw)} بايت")
@@ -49,11 +61,11 @@ class TokenMetadata:
     name: str
     symbol: str
     description: str = ""
-    dex: str = ""
+    dex: str = ""  # "pump.fun" أو "raydium" — يُستخدم لتكييف فحص حرق LP حسب طبيعة كل منصة
 
     total_supply: float = 0
-    mint_authority_active: bool = True
-    freeze_authority_active: bool = True
+    mint_authority_active: bool = True   # هل ما زال بالإمكان طباعة عملات جديدة؟
+    freeze_authority_active: bool = True  # هل يمكن تجميد محافظ المستخدمين؟
 
     lp_burned_or_locked_pct: float = 0.0
     dev_wallet_pct: float = 0.0
@@ -73,6 +85,17 @@ class FilterResult:
 
 
 def check_forbidden_keywords(meta: TokenMetadata) -> FilterResult:
+    """
+    المستوى الأول: فلترة لغوية سريعة على الاسم والوصف والرمز (كلمات تخالف
+    ضوابط الشريعة: قمار، فوائد ربوية، محتوى غير لائق...).
+
+    قابل للتعطيل بالكامل عبر SHARIA_FILTERS_ENABLED=false في Railway
+    Variables — دون الحاجة لأي تعديل في الكود، ويمكن إعادة تفعيله بنفس
+    الطريقة في أي وقت لاحق.
+    """
+    if not SHARIA_FILTERS_ENABLED:
+        return FilterResult(True, "فلاتر الشريعة معطّلة حالياً (SHARIA_FILTERS_ENABLED=false)", "keyword_filter")
+
     text = f"{meta.name} {meta.symbol} {meta.description}".lower()
     for kw in FILTERS.forbidden_keywords:
         if kw in text:
@@ -82,8 +105,13 @@ def check_forbidden_keywords(meta: TokenMetadata) -> FilterResult:
 
 def check_supply_and_burn(meta: TokenMetadata) -> FilterResult:
     """
-    ملاحظة مهمة لـ Pump.fun: السيولة محبوسة داخل Bonding Curve، لا LP تقليدية
-    قابلة للحرق. نتجاوز شرط "حرق LP" لعملات Pump.fun، ونُبقيه صارماً لـ Raydium.
+    التحقق من آلية الانكماش/العرض الثابت.
+
+    ملاحظة مهمة لـ Pump.fun: هذه المنصة لا تستخدم "LP تقليدية" قابلة للحرق —
+    السيولة محبوسة داخل Bonding Curve نفسه ولا يمكن لأي طرف (حتى المطور)
+    سحبها يدوياً، بخلاف Raydium حيث حرق LP هو الضمانة الأساسية ضد Rug Pull.
+    لذلك نتجاوز شرط "حرق LP" لعملات Pump.fun تحديداً (لأنه غير منطبق على
+    تصميمها من الأساس)، بينما نُبقي هذا الشرط صارماً وإلزامياً لـ Raydium.
     """
     if FILTERS.require_fixed_supply and meta.mint_authority_active:
         return FilterResult(
@@ -108,9 +136,13 @@ def check_supply_and_burn(meta: TokenMetadata) -> FilterResult:
 
 def check_distribution(meta: TokenMetadata) -> FilterResult:
     """
-    ملاحظة: عندما تتعذّر قراءة توزيع الحيازة فعلياً (holder_data_available=False،
-    غالباً بسبب Token-2022)، لا نرفض تلقائياً بافتراض "100% ملكية مطور" —
-    بل نتخطى فحص النسب هنا ونعتمد على GoPlus كشبكة أمان بديلة.
+    التحقق من عدم شبه بونزي في التوزيع.
+
+    ملاحظة مهمة: عندما تتعذّر قراءة توزيع الحيازة فعلياً (holder_data_available
+    = False، غالباً بسبب Token-2022)، لا نرفض تلقائياً بافتراض "100% ملكية
+    مطور" — لأن هذا ليس بيانات حقيقية، بل نتخطى فحص النسب هنا تحديداً ونعتمد
+    على GoPlus (الذي يحلّل هذا من قاعدة بياناته الخاصة، غير المتأثرة بقيود
+    RPC لدينا) كشبكة أمان بديلة في المرحلة التالية من الفلترة.
     """
     if not meta.holder_data_available:
         if FILTERS.forbid_referral_mechanics and meta.has_referral_or_commission_function:
@@ -152,6 +184,7 @@ def check_distribution(meta: TokenMetadata) -> FilterResult:
 
 
 def check_fungibility_and_transferability(meta: TokenMetadata) -> FilterResult:
+    """التحقق من قابلية الاستبدال والتحويل الحر."""
     if FILTERS.require_standard_token_program and not meta.is_standard_spl_token:
         return FilterResult(
             False,
@@ -177,6 +210,7 @@ def check_fungibility_and_transferability(meta: TokenMetadata) -> FilterResult:
 
 
 def run_all_onchain_filters(meta: TokenMetadata) -> FilterResult:
+    """يشغّل كل الفلاتر بالترتيب ويتوقف عند أول رفض (fail-fast) لتوفير الموارد."""
     checks = [
         check_forbidden_keywords,
         check_supply_and_burn,
