@@ -26,6 +26,26 @@ HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", "").strip()
 HELIUS_RPC_URL = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
 HELIUS_WS_URL = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
 
+# Chainstack: بديل احتياطي لـ Helius — حد معدل أعلى بكثير (25 طلب/ثانية
+# مستمرة، بدل سقف شهري صارم). الرابط يحتوي المفتاح مدمجاً بداخله مباشرة
+# (وليس معاملاً منفصلاً)، لذا نأخذه كاملاً كما هو من Railway Variables.
+CHAINSTACK_RPC_URL = os.getenv("CHAINSTACK_RPC_URL", "").strip()
+CHAINSTACK_WS_URL = os.getenv("CHAINSTACK_WS_URL", "").strip()
+
+# المزود الأساسي المُستخدم فعلياً: Chainstack إن أُضيف في Railway، وإلا
+# Helius تلقائياً (بدون كسر أي شيء إن لم تُضِف Chainstack إطلاقاً).
+PRIMARY_RPC_URL = CHAINSTACK_RPC_URL or HELIUS_RPC_URL
+PRIMARY_WS_URL = CHAINSTACK_WS_URL or HELIUS_WS_URL
+
+# Ankr: مصدر HTTP احتياطي إضافي (WebSocket يتطلب باقة مدفوعة، فلا نستخدمه هنا)
+ANKR_RPC_URL = os.getenv("ANKR_RPC_URL", "").strip()
+
+# قائمة تناوب (Round-robin) بين كل مزودي HTTP المتاحين فعلياً — يُبنى تلقائياً
+# من أي مزود أضفت مفتاحه في Railway، ويتجاهل الفارغ منها بصمت. عند فشل محاولة
+# على مزود معيّن (مثلاً 429)، المحاولة التالية تجرّب مزوداً مختلفاً تماماً
+# بدل الاصطدام بنفس القيد مرة أخرى.
+RPC_ENDPOINTS = [url for url in [CHAINSTACK_RPC_URL, HELIUS_RPC_URL, ANKR_RPC_URL] if url]
+
 # Jupiter: تم إيقاف quote-api.jup.ag، والنطاق الجديد api.jup.ag يتطلب مفتاح API مجاني
 # احصل عليه من portal.jup.ag
 JUPITER_API_KEY = os.getenv("JUPITER_API_KEY", "")
