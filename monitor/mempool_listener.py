@@ -456,7 +456,8 @@ async def run_mempool_listener():
             error_text = str(e)
             if "429" in error_text:
                 logger.error(
-                    f"⚠️ خطأ 429 (تجاوز حد المعدل) من Helius — إعادة الاتصال بعد "
+                    f"⚠️ خطأ 429 (تجاوز حد المعدل) من مزود WebSocket ({PRIMARY_WS_URL[:40]}...) — "
+                    f"إعادة الاتصال بعد "
                     f"تأخير طويل ({rate_limit_delay}s) لتفادي تجديد الحظر: {error_text}"
                 )
                 await asyncio.sleep(rate_limit_delay)
