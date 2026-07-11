@@ -112,9 +112,11 @@ async def _execute_sell(
     profit_loss = db.record_exit(
         trade["id"], exit_price, proceeds_sol, reason, tx_hash, flagged=flagged
     )
+    cumulative = db.get_cumulative_performance()
     await notifier.alert_auto_closed(
         trade["symbol"], mint_address, reason,
         trade["capital_invested_sol"], proceeds_sol, profit_loss, tx_hash,
+        cumulative=cumulative,
     )
     return profit_loss
 
