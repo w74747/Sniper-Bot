@@ -1,10 +1,12 @@
 """
-قائمة الانتظار (Watchlist) + المسار السريع (Fast Track).
+قائمة الانتظار (Watchlist): جوهر الاستراتيجية المتفق عليها.
 
-المسار العادي: 24-72 ساعة انتظار قبل فحص GoPlus/محاكاة البيع النهائي.
-المسار السريع: يعمل بالتوازي، يفحص كل 30 ثانية العملات الحديثة (<60 دقيقة)
-بحثاً عن "انطلاق صاروخي" (momentum)، ويُسرّع الشراء عند وجوده — لكن بنفس
-شروط الأمان الصارمة (GoPlus + محاكاة بيع)، بلا أي تنازل.
+بدل الشراء الفوري عند اجتياز الفلاتر الآلية، تدخل العملة "قائمة مراقبة"
+لمدة 24-72 ساعة، خلالها نراقب مؤشرات عضوية حقيقية (نمو حاملين، تداول
+طبيعي، نشاط تطوير فعلي) قبل اتخاذ قرار الشراء النهائي.
+
+هذا يعني تخلياً كاملاً عن ميزة "السرعة اللحظية" (وبالتالي لا حاجة لـ
+Jito/co-location) مقابل التزام حقيقي بمعايير الجدية والمشروعية.
 """
 import asyncio
 import logging
@@ -14,17 +16,23 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from config.settings import WATCHLIST, EXIT_STRATEGY, FAST_TRACK
+from config.settings import WATCHLIST, EXIT_STRATEGY, FAST_TRACK, USE_DEVNET
 from db.trades import DB_PATH, record_screening_result
 from trading.executor import execute_buy
+from trading.swap_client import load_wallet_keypair
 from filters.reputation import evaluate_reputation
 from filters.sell_simulation import simulate_sell, evaluate_simulation_result
 from filters.momentum import check_momentum
-from utils.solana_rpc import get_token_largest_accounts, rpc_call
+from utils.solana_rpc import get_token_largest_accounts, rpc_call, get_wallet_sol_balance
 
 logger = logging.getLogger("watchlist")
 
-TOTAL_BOT_CAPITAL_SOL = 0.265
+# رصيد احتياطي ثابت (بالـ SOL) نُبقيه دائماً بلا مساس — لتغطية رسوم الشبكة
+# وإنشاء حسابات التوكن (ATA) المستقبلية، بدل استخدام الرصيد بالكامل حرفياً.
+SOL_FEE_RESERVE = 0.01
+
+# يُستخدم فقط في وضع DEVNET (حيث لا يوجد رصيد حقيقي على الإطلاق لقراءته)
+DEVNET_FALLBACK_CAPITAL_SOL = 1.0
 
 
 def init_watchlist_table(db_path: str = DB_PATH):
@@ -41,7 +49,7 @@ def init_watchlist_table(db_path: str = DB_PATH):
             added_at REAL,
             initial_filter_report TEXT,
             holders_at_add INTEGER DEFAULT 0,
-            status TEXT DEFAULT 'watching'
+            status TEXT DEFAULT 'watching'  -- watching / approved / rejected / expired
         )
     """)
     conn.commit()
@@ -78,6 +86,7 @@ def add_to_watchlist(entry: WatchlistEntry, db_path: str = DB_PATH) -> int:
 
 
 def is_already_in_watchlist(mint_address: str, db_path: str = DB_PATH) -> bool:
+    """يفحص إن كانت هذه العملة موجودة مسبقاً في watchlist بأي حالة (لمنع التكرار)."""
     conn = sqlite3.connect(db_path)
     row = conn.execute(
         "SELECT 1 FROM watchlist WHERE mint_address = ? LIMIT 1", (mint_address,)
@@ -87,8 +96,27 @@ def is_already_in_watchlist(mint_address: str, db_path: str = DB_PATH) -> bool:
 
 
 async def check_organic_growth(mint_address: str, holders_at_add: int) -> dict:
+    """
+    يفحص المؤشرات العضوية الحالية مقابل لحظة الإضافة للـ watchlist.
+
+    ملاحظة تنفيذية مهمة (تقريب معروف ومقصود):
+    getTokenLargestAccounts يرجع فقط أكبر 20 حاملاً كحد أقصى (قيد من Solana RPC
+    نفسه، وليس قيداً منّا) — لذلك "عدد الحاملين" هنا هو تقريب وليس عدّاً دقيقاً
+    لكل حاملي العملة. هذا كافٍ كمؤشر اتجاه (هل يتزايد التوزيع أم لا)، لكنه
+    ليس مصدراً دقيقاً 100%. لعدّ دقيق حقيقي، يلزم مصدر بيانات مخصص (indexer
+    كامل يتتبع كل حسابات التوكن)، وهو خارج نطاق استعلام RPC بسيط.
+
+    TODO المتبقي فعلاً (يحتاج خدمة خارجية، وليس RPC عادي):
+    - حجم تداول عضوي مقابل wash trading (يحتاج بيانات DEX تاريخية، مثل DexScreener API)
+    - نشاط GitHub فعلي إن وُجد رابط مستودع
+    - نمو متابعين Twitter/Telegram (لا بوتات)
+    """
     try:
-        largest_accounts = await get_token_largest_accounts(mint_address)
+        # max_retries=3: يغطي كل المزودين المتاحين بالتناوب (Chainstack, Helius,
+        # Ankr) — ضروري لأن بعض المزودين (مثل Chainstack المجاني) لا يدعمون
+        # هذه الدالة تحديداً (getTokenLargestAccounts) على العقد المشتركة،
+        # فيجب الانتقال تلقائياً للمزود التالي بدل التوقف عند أول رفض.
+        largest_accounts = await get_token_largest_accounts(mint_address, max_retries=3)
         current_holders = sum(1 for h in largest_accounts if float(h.get("amount", 0)) > 0)
     except Exception as e:
         logger.warning(f"تعذّر فحص النمو العضوي لـ {mint_address}: {e}")
@@ -99,12 +127,16 @@ async def check_organic_growth(mint_address: str, holders_at_add: int) -> dict:
     return {
         "current_holders": current_holders,
         "holders_growth": holders_growth,
-        "organic_volume_ratio": None,
+        "organic_volume_ratio": None,  # TODO: يحتاج DexScreener API أو مصدر مشابه
     }
 
 
 async def run_security_checks(mint_address: str, deployer_wallet: str, pool_address: str) -> tuple[bool, str]:
-    """فحوصات الأمان المشتركة (GoPlus + محاكاة البيع) — يُستدعى من كلا المسارين."""
+    """
+    فحوصات الأمان المشتركة (GoPlus + محاكاة البيع) — يُستدعى من كلا المسارين:
+    المسار العادي (watchlist بعد 24-72 ساعة) والمسار السريع (fast-track عند
+    زخم قوي). استخراجها هنا يمنع تكرار نفس المنطق مرتين.
+    """
     reputation_ok, reputation_reason = await evaluate_reputation(mint_address, deployer_wallet)
     if not reputation_ok:
         return False, f"فشلت فحوصات السمعة: {reputation_reason}"
@@ -124,7 +156,16 @@ async def run_security_checks(mint_address: str, deployer_wallet: str, pool_addr
 
 
 async def evaluate_watchlist_entry(entry: dict) -> tuple[str, str]:
-    """يقرر: approved / rejected / still_watching / expired (المسار العادي)."""
+    """
+    يقرر: approved / rejected / still_watching / expired
+
+    مهم: فحص GoPlus ومحاكاة البيع يُشغَّلان هنا فقط — بعد مرور فترة الانتظار
+    الدنيا (min_watch_hours) — وليس لحظة الاكتشاف الأولى. هذا إصلاح معماري
+    مقصود: عملة عمرها ثوانٍ لا تملك GoPlus بيانات كافية عنها بعد (يفشل
+    الفحص دائماً تقريباً بسبب فارق الفهرسة، وليس بسبب جودة العملة)، بينما
+    بعد ساعات من الانتظار (كما تنص استراتيجيتنا الأصلية أصلاً) تكون هذه
+    البيانات متوفرة بيقين، فيصبح الفحص ذا معنى حقيقي.
+    """
     age_hours = (time.time() - entry["added_at"]) / 3600
 
     growth_data = await check_organic_growth(entry["mint_address"], entry["holders_at_add"])
@@ -140,6 +181,7 @@ async def evaluate_watchlist_entry(entry: dict) -> tuple[str, str]:
             return "expired", "انتهت فترة المراقبة القصوى دون نمو عضوي كافٍ"
         return "still_watching", f"نمو عضوي غير كافٍ بعد ({age_hours:.1f}h)"
 
+    # النمو العضوي كافٍ ومرّت فترة الانتظار الدنيا → الآن فقط نفحص GoPlus ومحاكاة البيع
     security_ok, security_reason = await run_security_checks(
         entry["mint_address"], entry.get("deployer_wallet", ""), entry.get("pool_address", "")
     )
@@ -154,13 +196,17 @@ async def evaluate_watchlist_entry(entry: dict) -> tuple[str, str]:
 
 async def evaluate_fast_track_entry(entry: dict) -> Optional[tuple[str, str]]:
     """
-    المسار السريع: يفحص هل العملة تُظهر "انطلاقاً صاروخياً" حقيقياً الآن،
-    وإن كان كذلك، يشغّل نفس فحوصات الأمان — بدون انتظار 24-72 ساعة.
-    يرجع None إذا لم يكن هناك زخم كافٍ (يُترك القرار للمسار العادي).
+    المسار السريع: يفحص هل العملة تُظهر "انطلاقاً صاروخياً" حقيقياً الآن
+    (عبر filters/momentum.py)، وإن كان كذلك، يشغّل نفس فحوصات الأمان
+    المستخدمة في المسار العادي (GoPlus + محاكاة البيع) — بدون انتظار
+    24-72 ساعة. يرجع None إذا لم يكن هناك زخم كافٍ (يترك القرار للمسار العادي).
+
+    مهم: هذا لا يُضعف الأمان إطلاقاً — فقط يتخطى شرط "الوقت"، ويُبقي شرط
+    "الأمان" صارماً كما هو تماماً في المسار العادي.
     """
     age_minutes = (time.time() - entry["added_at"]) / 60
     if age_minutes > FAST_TRACK.max_entry_age_minutes:
-        return None
+        return None  # فاتت نافذة المسار السريع — يُترك للمسار العادي فقط
 
     momentum_ok, momentum_reason = await check_momentum(entry["mint_address"])
     if not momentum_ok:
@@ -178,14 +224,41 @@ async def evaluate_fast_track_entry(entry: dict) -> Optional[tuple[str, str]]:
     return "approved", f"🚀 مسار سريع: {momentum_reason} — {security_reason}"
 
 
+async def _get_current_capital_sol() -> float:
+    """
+    يرجع الرصيد الفعلي القابل للاستخدام الآن (وليس رقماً ثابتاً يصبح قديماً
+    بعد أول ربح/خسارة). في وضع DEVNET، لا يوجد رصيد حقيقي فيُستخدم رقم
+    افتراضي ثابت فقط للمحاكاة.
+    """
+    if USE_DEVNET:
+        return DEVNET_FALLBACK_CAPITAL_SOL
+
+    try:
+        keypair = load_wallet_keypair()
+        actual_balance = await get_wallet_sol_balance(str(keypair.pubkey()))
+        usable = max(actual_balance - SOL_FEE_RESERVE, 0.0)
+        return usable
+    except Exception as e:
+        logger.error(f"تعذّر قراءة الرصيد الفعلي — لن يُنفَّذ الشراء: {e}")
+        return 0.0
+
+
 async def _execute_approval(entry: dict, reason: str, stage: str, db_path: str):
-    """منطق تنفيذ الشراء المشترك بين المسار العادي والمسار السريع."""
+    """منطق تنفيذ الشراء المشترك بين المسار العادي والمسار السريع — يمنع تكرار الكود."""
+    current_capital = await _get_current_capital_sol()
+    if current_capital <= 0:
+        logger.warning(
+            f"تخطّي شراء {entry['symbol']} — الرصيد المتاح غير كافٍ حالياً "
+            f"({current_capital:.4f} SOL بعد حجز الاحتياطي)"
+        )
+        return
+
     logger.info(f"موافقة على شراء {entry['symbol']} ({stage}): {reason}")
     record_screening_result(
         entry["mint_address"], entry["symbol"], entry.get("dex", ""),
         "added_to_watchlist", stage, reason,
     )
-    capital_sol = TOTAL_BOT_CAPITAL_SOL * (EXIT_STRATEGY.max_capital_pct_per_trade / 100)
+    capital_sol = current_capital * (EXIT_STRATEGY.max_capital_pct_per_trade / 100)
     await execute_buy(
         entry["mint_address"], entry["symbol"], entry["pool_address"],
         capital_sol=capital_sol,
@@ -195,7 +268,7 @@ async def _execute_approval(entry: dict, reason: str, stage: str, db_path: str):
 
 
 async def run_watchlist_loop(db_path: str = DB_PATH):
-    """يراجع كل العملات في قائمة المراقبة دورياً (كل 15 دقيقة) ويتخذ قرار الشراء."""
+    """يراجع كل العملات في قائمة المراقبة دورياً ويتخذ قرار الشراء عند الموافقة."""
     init_watchlist_table(db_path)
     while True:
         conn = sqlite3.connect(db_path)
@@ -225,8 +298,10 @@ async def run_watchlist_loop(db_path: str = DB_PATH):
 
 async def run_fast_track_loop(db_path: str = DB_PATH):
     """
-    حلقة منفصلة أسرع بكثير (كل 30 ثانية) تفحص فقط العملات الحديثة جداً
-    (أقل من ساعة) بحثاً عن انطلاق صاروخي، بنفس شروط الأمان الصارمة.
+    حلقة منفصلة تعمل بمعدل أسرع بكثير (كل 30 ثانية افتراضياً) من watchlist
+    العادي (كل 15 دقيقة)، وتفحص فقط العملات الحديثة جداً (أقل من ساعة) بحثاً
+    عن "انطلاق صاروخي" يستحق تسريع قرار الشراء. لا تُغيّر أو تُضعف أي شرط
+    أمان — فقط تتخطى شرط الانتظار الزمني عند وجود دليل قوي على الزخم الآن.
     """
     if not FAST_TRACK.enabled:
         logger.info("المسار السريع (fast-track) معطّل في الإعدادات — لن يعمل")
@@ -254,7 +329,7 @@ async def run_fast_track_loop(db_path: str = DB_PATH):
                 continue
 
             if result is None:
-                continue
+                continue  # لا زخم كافٍ الآن — يُترك للمسار العادي بصمت
 
             decision, reason = result
             if decision == "approved":
@@ -265,6 +340,9 @@ async def run_fast_track_loop(db_path: str = DB_PATH):
                     entry["mint_address"], entry["symbol"], entry.get("dex", ""),
                     "rejected", "fast_track_rejected", reason,
                 )
+                # ملاحظة: لا نُغيّر حالة الصفقة إلى rejected هنا — فشل الأمان
+                # في لحظة الزخم لا يعني بالضرورة رفضاً نهائياً؛ نترك المسار
+                # العادي يقرر مصيرها النهائي لاحقاً بعد فترة الانتظار الكاملة.
 
         await asyncio.sleep(FAST_TRACK.check_interval_seconds)
 
