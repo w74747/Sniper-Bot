@@ -40,11 +40,26 @@ PRIMARY_WS_URL = CHAINSTACK_WS_URL or HELIUS_WS_URL
 # Ankr: مصدر HTTP احتياطي إضافي (WebSocket يتطلب باقة مدفوعة، فلا نستخدمه هنا)
 ANKR_RPC_URL = os.getenv("ANKR_RPC_URL", "").strip()
 
+# GetBlock: مصدر HTTP احتياطي إضافي — فريتير يومي (50 ألف CU/يوم، 20 طلب/ثانية)
+GETBLOCK_RPC_URL = os.getenv("GETBLOCK_RPC_URL", "").strip()
+
+# Solana العام: مزوّد Solana Foundation الرسمي، مجاني تماماً وبدون أي تسجيل أو
+# مفتاح — لكن حدوده صارمة جداً ووثوقيته متذبذبة (مصمم للطوارئ/الاختبار وليس
+# الاستخدام المكثف). نضعه كخيار احتياطي أخير في نهاية قائمة التناوب فقط،
+# يُستخدم حين يفشل كل المزودين المدفوعين/المسجَّلين معاً.
+SOLANA_PUBLIC_RPC_URL = "https://api.mainnet-beta.solana.com"
+
 # قائمة تناوب (Round-robin) بين كل مزودي HTTP المتاحين فعلياً — يُبنى تلقائياً
 # من أي مزود أضفت مفتاحه في Railway، ويتجاهل الفارغ منها بصمت. عند فشل محاولة
 # على مزود معيّن (مثلاً 429)، المحاولة التالية تجرّب مزوداً مختلفاً تماماً
-# بدل الاصطدام بنفس القيد مرة أخرى.
-RPC_ENDPOINTS = [url for url in [CHAINSTACK_RPC_URL, HELIUS_RPC_URL, ANKR_RPC_URL] if url]
+# بدل الاصطدام بنفس القيد مرة أخرى. Solana العام دائماً آخر خيار (احتياطي أخير).
+RPC_ENDPOINTS = [
+    url for url in [
+        CHAINSTACK_RPC_URL, HELIUS_RPC_URL, ANKR_RPC_URL,
+        GETBLOCK_RPC_URL, SOLANA_PUBLIC_RPC_URL,
+    ]
+    if url
+]
 
 # Jupiter: تم إيقاف quote-api.jup.ag، والنطاق الجديد api.jup.ag يتطلب مفتاح API مجاني
 # احصل عليه من portal.jup.ag
