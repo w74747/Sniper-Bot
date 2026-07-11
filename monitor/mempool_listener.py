@@ -1,7 +1,10 @@
 """
 الاستماع لأحداث إطلاق سيولة جديدة (تهيئة pool جديد على Raydium/Pump.fun)
-عبر Helius WebSocket، ثم تشغيل الفلاتر الآلية الفورية فقط.
-GoPlus ومحاكاة البيع يُؤجَّلان لمرحلة watchlist (بعد فترة انتظار كافية).
+عبر Helius WebSocket، ثم تشغيل كل الفلاتر
+بالترتيب: كلمات محظورة → on-chain → سمعة/GoPlus → محاكاة بيع.
+
+عند اجتياز كل الفلاتر: إضافة العملة إلى watchlist (وليس شراء فوري) —
+حسب الاستراتيجية المتفق عليها.
 """
 import asyncio
 import json
@@ -32,6 +35,10 @@ MONITORED_PROGRAM_IDS = [PUMP_FUN_PROGRAM_ID, RAYDIUM_AMM_V4_PROGRAM_ID]
 
 
 def _get_all_instructions(tx_data: dict) -> list:
+    """
+    يجمع كل التعليمات القابلة للفحص من معاملة واحدة: التعليمات الأساسية
+    (message.instructions) + التعليمات المتداخلة (meta.innerInstructions).
+    """
     instructions = list(tx_data.get("transaction", {}).get("message", {}).get("instructions", []))
     inner_instructions = tx_data.get("meta", {}).get("innerInstructions", [])
     for group in inner_instructions:
@@ -83,6 +90,7 @@ def parse_pump_fun_create_instruction(tx_data: dict) -> Optional[dict]:
 
             mint_address = ix_accounts[0]
             bonding_curve = ix_accounts[2]
+            associated_bonding_curve = ix_accounts[3]
             deployer_wallet = ix_accounts[7]
 
             return {
@@ -90,7 +98,12 @@ def parse_pump_fun_create_instruction(tx_data: dict) -> Optional[dict]:
                 "pool_address": bonding_curve,
                 "deployer_wallet": deployer_wallet,
                 "dex": "pump.fun",
-                "lp_mint_address": None,
+                "lp_mint_address": None,  # Pump.fun لا يستخدم LP mint تقليدي (bonding curve)
+                # مهم جداً: حساب bonding curve (وATA الخاص به) يملك تقريباً كل
+                # العرض عند الإطلاق بتصميم Pump.fun نفسه — آمن ومتوقع تماماً
+                # (العقد يديره، وليس المطور). يجب استثناؤه من حساب "أكبر حامل"،
+                # وإلا نرفض كل عملة Pump.fun تقريباً خطأً بدون سبب حقيقي.
+                "known_lp_token_accounts": [associated_bonding_curve],
             }
     except (KeyError, IndexError, TypeError) as e:
         logger.debug(f"فشل تحليل معاملة Pump.fun: {e}")
@@ -99,7 +112,10 @@ def parse_pump_fun_create_instruction(tx_data: dict) -> Optional[dict]:
 
 
 def parse_raydium_initialize_instruction(tx_data: dict) -> Optional[dict]:
-    """يحلل معاملة "initialize2" من Raydium AMM V4 لاستخراج بيانات الـ pool الجديد."""
+    """
+    يحلل معاملة "initialize2" من Raydium AMM V4 لاستخراج بيانات الـ pool الجديد.
+    تحذير: مواقع الحسابات هنا تقديرية وغير مُختبرة على معاملة حقيقية بعد.
+    """
     try:
         message = tx_data["transaction"]["message"]
         account_keys = message["accountKeys"]
@@ -229,8 +245,6 @@ async def process_new_pool_event(pool_event: dict):
         logger.warning(f"تعذّر قراءة بيانات العقد لـ {pool_event.get('mint_address')}: {e}")
         return
 
-    # المرحلة 1: الفلاتر الآلية الفورية (كلمات + عرض + توزيع + قابلية تحويل)
-    # هذه فقط تعتمد على بيانات on-chain مباشرة، فلا تعاني من فارق الفهرسة.
     onchain_result = run_all_onchain_filters(meta)
     if not onchain_result.passed:
         logger.info(f"رفض {meta.symbol}: {onchain_result.reason}")
@@ -239,13 +253,6 @@ async def process_new_pool_event(pool_event: dict):
         )
         return
 
-    # ملاحظة معمارية مهمة: فحص GoPlus ومحاكاة البيع لا يُشغَّلان هنا إطلاقاً.
-    # عملة عمرها ثوانٍ لا تملك GoPlus بيانات كافية عنها بعد (يفشل الفحص دائماً
-    # تقريباً بسبب فارق الفهرسة، وليس بسبب جودة العملة الفعلية) — هذا يتناقض
-    # مع استراتيجيتنا الأصلية (انتظار 24-72 ساعة قبل القرار النهائي). لذلك
-    # نضيف العملة لـ watchlist بمجرد اجتياز الفلاتر الآلية فقط، ونؤجّل فحص
-    # GoPlus/محاكاة البيع إلى monitor/watchlist.py حيث تُفحصان عند انتهاء
-    # فترة الانتظار الدنيا، حين تكون بياناتهما متوفرة فعلياً وذات معنى حقيقي.
     record_screening_result(
         mint_address, meta.symbol, dex, "added_to_watchlist", "onchain_passed",
         f"اجتازت الفلاتر الآلية: {onchain_result.reason} — بانتظار فحص GoPlus/البيع لاحقاً"
@@ -302,6 +309,11 @@ async def fetch_and_parse_transaction(signature: str) -> Optional[dict]:
 
 
 async def _run_single_websocket_session():
+    """
+    جلسة اتصال واحدة — تُغلق تلقائياً عند أي انقطاع، ويلتقطها المستدعي لإعادة المحاولة.
+    كل حدث مرشّح يُعالج في مهمة (Task) منفصلة عبر asyncio.create_task،
+    مع مهلة قصوى صارمة (45 ثانية) لكل معالجة، ونبضة قلب دورية للتشخيص.
+    """
     subscribe_id = 1
     pending_subscriptions = {}
     processing_semaphore = asyncio.Semaphore(5)
@@ -416,17 +428,40 @@ async def _run_single_websocket_session():
 
 
 async def run_mempool_listener():
+    """
+    يشترك فعلياً عبر logsSubscribe في Helius WebSocket لمراقبة أي معاملة
+    تذكر برنامج Pump.fun أو Raydium AMM V4، ثم يجلب كل معاملة مطابقة
+    كاملة عبر getTransaction لتحليلها واستخراج بيانات العملة الجديدة.
+
+    مهم: عند خطأ HTTP 429 (تجاوز حد المعدل) تحديداً، نستخدم تأخيراً طويلاً
+    جداً (يبدأ من 5 دقائق ويتصاعد حتى 30 دقيقة) بدل التأخير العادي (60 ثانية
+    كحد أقصى) — لأن إعادة المحاولة السريعة المتكررة بعد 429 تُجدّد الحظر
+    المؤقت من Helius باستمرار بدل الانتظار حتى ينتهي فعلياً.
+    """
     init_watchlist_table()
     logger.info("بدء الاستماع لأحداث السيولة الجديدة...")
 
     reconnect_delay = 5
+    rate_limit_delay = 300
+
     while True:
         try:
             await _run_single_websocket_session()
+            reconnect_delay = 5
         except (websockets.exceptions.ConnectionClosed, ConnectionResetError) as e:
             logger.warning(f"انقطع اتصال WebSocket: {type(e).__name__}: {e} — إعادة الاتصال خلال {reconnect_delay}s")
+            await asyncio.sleep(reconnect_delay)
+            reconnect_delay = min(reconnect_delay * 2, 60)
         except Exception as e:
-            logger.error(f"خطأ غير متوقع في جلسة WebSocket: {type(e).__name__}: {e} — إعادة الاتصال خلال {reconnect_delay}s")
-
-        await asyncio.sleep(reconnect_delay)
-        reconnect_delay = min(reconnect_delay * 2, 60)
+            error_text = str(e)
+            if "429" in error_text:
+                logger.error(
+                    f"⚠️ خطأ 429 (تجاوز حد المعدل) من Helius — إعادة الاتصال بعد "
+                    f"تأخير طويل ({rate_limit_delay}s) لتفادي تجديد الحظر: {error_text}"
+                )
+                await asyncio.sleep(rate_limit_delay)
+                rate_limit_delay = min(rate_limit_delay * 2, 1800)
+            else:
+                logger.error(f"خطأ غير متوقع في جلسة WebSocket: {type(e).__name__}: {e} — إعادة الاتصال خلال {reconnect_delay}s")
+                await asyncio.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 2, 60)
