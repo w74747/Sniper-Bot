@@ -1,6 +1,6 @@
 """
 الاستماع لأحداث إطلاق سيولة جديدة (تهيئة pool جديد على Raydium/Pump.fun)
-عبر Helius WebSocket، ثم تشغيل كل الفلاتر
+عبر Chainstack/Helius WebSocket (تناوب تلقائي)، ثم تشغيل كل الفلاتر
 بالترتيب: كلمات محظورة → on-chain → سمعة/GoPlus → محاكاة بيع.
 
 عند اجتياز كل الفلاتر: إضافة العملة إلى watchlist (وليس شراء فوري) —
@@ -13,7 +13,7 @@ from typing import Optional
 
 import websockets
 
-from config.settings import HELIUS_WS_URL, DEX_ALLOWLIST
+from config.settings import PRIMARY_WS_URL, DEX_ALLOWLIST
 from filters.onchain_filters import (
     TokenMetadata, run_all_onchain_filters, parse_spl_mint_account,
     KNOWN_BURN_ADDRESSES,
@@ -35,10 +35,6 @@ MONITORED_PROGRAM_IDS = [PUMP_FUN_PROGRAM_ID, RAYDIUM_AMM_V4_PROGRAM_ID]
 
 
 def _get_all_instructions(tx_data: dict) -> list:
-    """
-    يجمع كل التعليمات القابلة للفحص من معاملة واحدة: التعليمات الأساسية
-    (message.instructions) + التعليمات المتداخلة (meta.innerInstructions).
-    """
     instructions = list(tx_data.get("transaction", {}).get("message", {}).get("instructions", []))
     inner_instructions = tx_data.get("meta", {}).get("innerInstructions", [])
     for group in inner_instructions:
@@ -98,11 +94,7 @@ def parse_pump_fun_create_instruction(tx_data: dict) -> Optional[dict]:
                 "pool_address": bonding_curve,
                 "deployer_wallet": deployer_wallet,
                 "dex": "pump.fun",
-                "lp_mint_address": None,  # Pump.fun لا يستخدم LP mint تقليدي (bonding curve)
-                # مهم جداً: حساب bonding curve (وATA الخاص به) يملك تقريباً كل
-                # العرض عند الإطلاق بتصميم Pump.fun نفسه — آمن ومتوقع تماماً
-                # (العقد يديره، وليس المطور). يجب استثناؤه من حساب "أكبر حامل"،
-                # وإلا نرفض كل عملة Pump.fun تقريباً خطأً بدون سبب حقيقي.
+                "lp_mint_address": None,
                 "known_lp_token_accounts": [associated_bonding_curve],
             }
     except (KeyError, IndexError, TypeError) as e:
@@ -112,10 +104,7 @@ def parse_pump_fun_create_instruction(tx_data: dict) -> Optional[dict]:
 
 
 def parse_raydium_initialize_instruction(tx_data: dict) -> Optional[dict]:
-    """
-    يحلل معاملة "initialize2" من Raydium AMM V4 لاستخراج بيانات الـ pool الجديد.
-    تحذير: مواقع الحسابات هنا تقديرية وغير مُختبرة على معاملة حقيقية بعد.
-    """
+    """يحلل معاملة "initialize2" من Raydium AMM V4 لاستخراج بيانات الـ pool الجديد."""
     try:
         message = tx_data["transaction"]["message"]
         account_keys = message["accountKeys"]
@@ -309,11 +298,6 @@ async def fetch_and_parse_transaction(signature: str) -> Optional[dict]:
 
 
 async def _run_single_websocket_session():
-    """
-    جلسة اتصال واحدة — تُغلق تلقائياً عند أي انقطاع، ويلتقطها المستدعي لإعادة المحاولة.
-    كل حدث مرشّح يُعالج في مهمة (Task) منفصلة عبر asyncio.create_task،
-    مع مهلة قصوى صارمة (45 ثانية) لكل معالجة، ونبضة قلب دورية للتشخيص.
-    """
     subscribe_id = 1
     pending_subscriptions = {}
     processing_semaphore = asyncio.Semaphore(5)
@@ -360,7 +344,7 @@ async def _run_single_websocket_session():
             logger.info(f"💓 نبضة: {len(background_tasks)} مهمة قيد المعالجة حالياً")
 
     async with websockets.connect(
-        HELIUS_WS_URL, ping_interval=20, ping_timeout=20
+        PRIMARY_WS_URL, ping_interval=20, ping_timeout=20
     ) as ws:
         heartbeat_task = asyncio.create_task(_heartbeat_logger())
         try:
@@ -428,16 +412,6 @@ async def _run_single_websocket_session():
 
 
 async def run_mempool_listener():
-    """
-    يشترك فعلياً عبر logsSubscribe في Helius WebSocket لمراقبة أي معاملة
-    تذكر برنامج Pump.fun أو Raydium AMM V4، ثم يجلب كل معاملة مطابقة
-    كاملة عبر getTransaction لتحليلها واستخراج بيانات العملة الجديدة.
-
-    مهم: عند خطأ HTTP 429 (تجاوز حد المعدل) تحديداً، نستخدم تأخيراً طويلاً
-    جداً (يبدأ من 5 دقائق ويتصاعد حتى 30 دقيقة) بدل التأخير العادي (60 ثانية
-    كحد أقصى) — لأن إعادة المحاولة السريعة المتكررة بعد 429 تُجدّد الحظر
-    المؤقت من Helius باستمرار بدل الانتظار حتى ينتهي فعلياً.
-    """
     init_watchlist_table()
     logger.info("بدء الاستماع لأحداث السيولة الجديدة...")
 
