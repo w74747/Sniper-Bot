@@ -218,6 +218,37 @@ def record_alert(
     conn.close()
 
 
+def get_cumulative_performance(db_path: str = DB_PATH) -> dict:
+    """
+    يحسب الأداء التراكمي لكل الصفقات المغلقة حتى الآن — يُستخدم لعرض
+    "معدل التقدم" في كل رسالة إغلاق صفقة عبر تيليجرام.
+    """
+    conn = sqlite3.connect(db_path)
+    row = conn.execute("""
+        SELECT
+            COUNT(*) as total_closed,
+            SUM(CASE WHEN profit_loss_sol >= 0 THEN 1 ELSE 0 END) as winning_trades,
+            SUM(CASE WHEN profit_loss_sol < 0 THEN 1 ELSE 0 END) as losing_trades,
+            COALESCE(SUM(profit_loss_sol), 0) as total_profit_loss_sol,
+            COALESCE(SUM(capital_invested_sol), 0) as total_capital_deployed_sol
+        FROM trades
+        WHERE status IN ('closed_profit', 'closed_loss', 'closed_flagged')
+    """).fetchone()
+    conn.close()
+
+    total_closed, winning, losing, total_pl, total_capital = row
+    win_rate = (winning / total_closed * 100) if total_closed else 0.0
+
+    return {
+        "total_closed": total_closed or 0,
+        "winning_trades": winning or 0,
+        "losing_trades": losing or 0,
+        "total_profit_loss_sol": total_pl or 0.0,
+        "total_capital_deployed_sol": total_capital or 0.0,
+        "win_rate_pct": win_rate,
+    }
+
+
 def get_open_trades(db_path: str = DB_PATH):
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
