@@ -46,6 +46,14 @@ POLL_INTERVAL_SECONDS = 4
 # كم توقيعاً نجلب كحد أقصى في كل دورة استقصاء واحدة لكل برنامج
 SIGNATURES_PER_POLL = 30
 
+# ذاكرة مؤقتة قصيرة الأمد (في الذاكرة، وليست قاعدة بيانات) لمنع إعادة معالجة
+# نفس العملة عدة مرات خلال ثوانٍ قليلة — شائع جداً مع معاملات متعددة تشير
+# لنفس العملة قرب لحظة إنشائها (مثل عدة إضافات سيولة متتالية على Raydium).
+# هذا منفصل تماماً عن has_seen_mint_before/is_already_in_watchlist، لأن تلك
+# لا تتذكر العملات "المرفوضة" (لم تصبح صفقة أو تدخل watchlist إطلاقاً).
+_recently_processed_mints: dict = {}
+_RECENT_MINT_TTL_SECONDS = 120
+
 
 def _get_all_instructions(tx_data: dict) -> list:
     """
@@ -271,6 +279,21 @@ async def process_new_pool_event(pool_event: dict):
         return
 
     mint_address = pool_event.get("mint_address", "")
+
+    # فحص سريع ومجاني تماماً (بدون RPC): هل عولجت هذه العملة خلال آخر دقيقتين؟
+    now = asyncio.get_event_loop().time()
+    last_seen = _recently_processed_mints.get(mint_address)
+    if last_seen and (now - last_seen) < _RECENT_MINT_TTL_SECONDS:
+        logger.debug(f"تجاهل {mint_address} — عولجت للتو خلال آخر {_RECENT_MINT_TTL_SECONDS}s")
+        return
+    _recently_processed_mints[mint_address] = now
+
+    # تنظيف دوري بسيط للذاكرة المؤقتة لتفادي تضخّمها بلا حدود مع الوقت
+    if len(_recently_processed_mints) > 500:
+        cutoff = now - _RECENT_MINT_TTL_SECONDS
+        for addr in list(_recently_processed_mints.keys()):
+            if _recently_processed_mints[addr] < cutoff:
+                del _recently_processed_mints[addr]
 
     if await has_seen_mint_before(mint_address) or await is_already_in_watchlist(mint_address):
         logger.debug(f"تجاهل {mint_address} — تم رصدها/التعامل معها من قبل")
