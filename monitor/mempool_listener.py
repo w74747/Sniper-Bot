@@ -13,7 +13,7 @@ from typing import Optional
 
 import websockets
 
-from config.settings import PRIMARY_WS_URL, DEX_ALLOWLIST
+from config.settings import PRIMARY_WS_URL, WS_ENDPOINTS, DEX_ALLOWLIST
 from filters.onchain_filters import (
     TokenMetadata, run_all_onchain_filters, parse_spl_mint_account,
     KNOWN_BURN_ADDRESSES,
@@ -393,7 +393,7 @@ async def fetch_and_parse_transaction(signature: str) -> Optional[dict]:
     return None
 
 
-async def _run_single_websocket_session():
+async def _run_single_websocket_session(ws_url: str):
     """
     جلسة اتصال واحدة — تُغلق تلقائياً عند أي انقطاع، ويلتقطها المستدعي لإعادة المحاولة.
 
@@ -465,7 +465,7 @@ async def _run_single_websocket_session():
             logger.info(f"💓 نبضة: {len(background_tasks)} مهمة قيد المعالجة حالياً")
 
     async with websockets.connect(
-        PRIMARY_WS_URL, ping_interval=20, ping_timeout=20
+        ws_url, ping_interval=20, ping_timeout=20
     ) as ws:
         heartbeat_task = asyncio.create_task(_heartbeat_logger())
         try:
@@ -538,41 +538,59 @@ async def _run_single_websocket_session():
 
 async def run_mempool_listener():
     """
-    يشترك فعلياً عبر logsSubscribe في Helius WebSocket لمراقبة أي معاملة
-    تذكر برنامج Pump.fun أو Raydium AMM V4، ثم يجلب كل معاملة مطابقة
-    كاملة عبر getTransaction لتحليلها واستخراج بيانات العملة الجديدة.
-
-    مهم: عند خطأ HTTP 429 (تجاوز حد المعدل) تحديداً، نستخدم تأخيراً طويلاً
-    جداً (يبدأ من 5 دقائق ويتصاعد حتى 30 دقيقة) بدل التأخير العادي (60 ثانية
-    كحد أقصى) — لأن إعادة المحاولة السريعة المتكررة بعد 429 تُجدّد الحظر
-    المؤقت من Helius باستمرار بدل الانتظار حتى ينتهي فعلياً، مما يُبقي
-    الاتصال منقطعاً إلى ما لا نهاية (كما حدث فعلياً لمدة 5.5 ساعة متواصلة
-    رُصدت في أحد اللوجات: نفس خطأ 429 كل 60 ثانية بدون أي نجاح).
+    يشترك فعلياً عبر logsSubscribe لمراقبة أي معاملة تذكر برنامج Pump.fun
+    أو Raydium AMM V4. يتناوب تلقائياً بين كل مزودي WebSocket المتاحين
+    (WS_ENDPOINTS) عند الفشل المتكرر — بدل التعطل الكامل بانتظار تدخل يدوي
+    عندما تنتهي صلاحية مزود واحد (كما حدث فعلياً مع انتهاء تجربة Chainstack:
+    403 متكرر لأكثر من ساعتين متواصلتين بدون أي اكتشاف).
     """
     await init_watchlist_table()
     logger.info("بدء الاستماع لأحداث السيولة الجديدة...")
 
+    endpoints = WS_ENDPOINTS or [PRIMARY_WS_URL]
+    endpoint_index = 0
     reconnect_delay = 5
-    rate_limit_delay = 300  # 5 دقائق كبداية عند 429 تحديداً
+    rate_limit_delay = 300
+    consecutive_failures_on_current = 0
+    MAX_FAILURES_BEFORE_ROTATE = 3
 
     while True:
+        current_ws_url = endpoints[endpoint_index % len(endpoints)]
         try:
-            await _run_single_websocket_session()
-            reconnect_delay = 5  # نجح الاتصال ولو لفترة → نُعيد ضبط التأخير العادي
+            await _run_single_websocket_session(current_ws_url)
+            reconnect_delay = 5
+            consecutive_failures_on_current = 0
         except (websockets.exceptions.ConnectionClosed, ConnectionResetError) as e:
             logger.warning(f"انقطع اتصال WebSocket: {type(e).__name__}: {e} — إعادة الاتصال خلال {reconnect_delay}s")
             await asyncio.sleep(reconnect_delay)
             reconnect_delay = min(reconnect_delay * 2, 60)
         except Exception as e:
             error_text = str(e)
+            consecutive_failures_on_current += 1
+
+            if consecutive_failures_on_current >= MAX_FAILURES_BEFORE_ROTATE and len(endpoints) > 1:
+                logger.error(
+                    f"⚠️ فشل {consecutive_failures_on_current} محاولات متتالية على "
+                    f"{current_ws_url[:40]}... — التحول لمزود WebSocket التالي في القائمة"
+                )
+                endpoint_index += 1
+                consecutive_failures_on_current = 0
+                await asyncio.sleep(5)
+                continue
+
             if "429" in error_text:
                 logger.error(
-                    f"⚠️ خطأ 429 (تجاوز حد المعدل) من مزود WebSocket ({PRIMARY_WS_URL[:40]}...) — "
-                    f"إعادة الاتصال بعد "
-                    f"تأخير طويل ({rate_limit_delay}s) لتفادي تجديد الحظر: {error_text}"
+                    f"⚠️ خطأ 429 (تجاوز حد المعدل) من مزود WebSocket ({current_ws_url[:40]}...) — "
+                    f"إعادة الاتصال بعد تأخير طويل ({rate_limit_delay}s) لتفادي تجديد الحظر: {error_text}"
                 )
                 await asyncio.sleep(rate_limit_delay)
-                rate_limit_delay = min(rate_limit_delay * 2, 1800)  # حتى 30 دقيقة كحد أقصى
+                rate_limit_delay = min(rate_limit_delay * 2, 1800)
+            elif "403" in error_text:
+                logger.error(
+                    f"⚠️ خطأ 403 (رفض/انتهاء صلاحية) من مزود WebSocket ({current_ws_url[:40]}...) — {error_text}"
+                )
+                await asyncio.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 2, 60)
             else:
                 logger.error(f"خطأ غير متوقع في جلسة WebSocket: {type(e).__name__}: {e} — إعادة الاتصال خلال {reconnect_delay}s")
                 await asyncio.sleep(reconnect_delay)
