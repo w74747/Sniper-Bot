@@ -172,6 +172,42 @@ async def get_signatures_for_address(address: str, limit: int = 50) -> list:
     return result or []
 
 
+async def get_signatures_for_address_polling(
+    address: str, limit: int = 30, until: str = None, max_retries: int = 6
+) -> list:
+    """
+    نسخة مخصّصة للاستقصاء الدوري (Polling) بديلاً عن WebSocket — تتناوب بين
+    كل مزودي RPC_ENDPOINTS عند الفشل الحقيقي فقط.
+
+    ملاحظة حاسمة: قائمة فارغة [] هنا تعني "لا معاملات جديدة منذ آخر فحص"،
+    وهذه **نتيجة ناجحة تماماً وطبيعية جداً** (أغلب دورات الاستقصاء ستكون
+    كذلك) — وليست فشلاً يستوجب إعادة المحاولة على مزود آخر. لهذا لا نستخدم
+    _rpc_call_with_retry العامة هنا (التي تُعامل أي نتيجة فارغة كفشل)،
+    بل منطقاً مخصصاً يميّز بدقة بين "نجاح بنتيجة فارغة" و"فشل اتصال حقيقي".
+    """
+    config = {"limit": limit, "commitment": "confirmed"}
+    if until:
+        config["until"] = until
+
+    last_error = None
+    endpoints = RPC_ENDPOINTS or [ALCHEMY_RPC_URL]
+
+    for attempt in range(max_retries):
+        endpoint = endpoints[attempt % len(endpoints)]
+        try:
+            result = await rpc_call(
+                "getSignaturesForAddress", [address, config], endpoint=endpoint, max_retries=1
+            )
+            return result if result is not None else []
+        except RuntimeError as e:
+            last_error = e
+            continue
+
+    if last_error:
+        raise last_error
+    return []
+
+
 async def get_wallet_sol_balance(pubkey: str) -> float:
     """
     يرجع رصيد SOL الفعلي الحالي للمحفظة (وليس رقماً مضبوطاً يدوياً) — يُستخدم
