@@ -191,7 +191,7 @@ class PostTradeMonitorSettings:
     external_check_interval_minutes: int = 60   # فحص المصادر الخارجية كل كم دقيقة
 
     # عتبات إغلاق تلقائي فوري (دليل on-chain قاطع — لا حاجة لمراجعة بشرية)
-    auto_close_on_tax_increase_above_pct: float = 15.0
+    auto_close_on_tax_increase_above_pct: float = 25.0
     auto_close_on_lp_withdrawal: bool = True
     auto_close_on_ownership_change: bool = True
 
