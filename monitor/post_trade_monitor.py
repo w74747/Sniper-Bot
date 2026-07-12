@@ -4,9 +4,6 @@
 الطبقة 1 (on-chain آلية، كل ثوانٍ): تغيّر ضريبة، سحب سيولة، تغيّر ownership.
     → عند اكتشاف أي منها: إغلاق تلقائي فوري + رسالة توثيق مالي كامل.
 
-الطبقة 1.5 (سعر فعلي، كل ثوانٍ): وقف خسارة متحرك بعد ربح، أو وقف خسارة صارم
-    عند انهيار مباشر بدون تلاعب تقني — بيع عادي مخطط، وليس طارئاً.
-
 الطبقة 2 (مصادر خارجية دورية، كل ساعة): سمعة، أخبار، تسريبات.
     → عند اكتشاف إشارة: تنبيه للمراجعة البشرية فقط — لا إغلاق تلقائي.
     → إذا أكّد المستخدم الشبهة يدوياً: يُستدعى نفس مسار الإغلاق التلقائي.
@@ -146,7 +143,7 @@ async def monitor_single_trade(trade: dict):
 
     while True:
         # تحديث حالة الصفقة (قد تكون أُغلقت من مصدر آخر)
-        open_trades = db.get_open_trades()
+        open_trades = await db.get_open_trades()
         if not any(t["id"] == trade_id for t in open_trades):
             logger.info(f"الصفقة {trade_id} لم تعد مفتوحة — إيقاف المراقبة")
             _peak_price_usd.pop(trade_id, None)
@@ -180,7 +177,7 @@ async def monitor_single_trade(trade: dict):
         if tick % external_interval_ticks == 0:
             has_signal, detail = await check_external_signals(trade)
             if has_signal:
-                db.record_alert(
+                await db.record_alert(
                     trade_id, "external_needs_review", detail,
                     requires_human_confirmation=True,
                 )
@@ -192,11 +189,90 @@ async def monitor_single_trade(trade: dict):
         await asyncio.sleep(onchain_interval)
 
 
+async def run_post_restore_health_check():
+    """
+    يعمل مرة واحدة فقط عند بدء تشغيل البوت (بعد أي Restart لأي سبب: تحديث
+    كود، انقطاع، إلخ). يراجع كل صفقة كانت مفتوحة قبل التوقف، ويتحقق:
+
+    1. هل لا تزال قابلة للبيع فعلياً الآن؟ (إعادة تشغيل محاكاة البيع)
+    2. تذكير مهم: متابعة "أعلى قمة سعرية" لوقف الخسارة المتحرك محفوظة في
+       الذاكرة فقط (_peak_price_usd) وتُفقد عند أي إعادة تشغيل — هذا الفحص
+       يُعيد تهيئتها صراحة من السعر الحالي الآن (بدل الانتظار للفحص الدوري
+       العادي)، حتى لا تفوتنا حماية لحظات مهمة فور العودة للعمل.
+
+    يرسل تقريراً واحداً مجمّعاً عبر تيليجرام يلخّص النتيجة لكل صفقة.
+    """
+    open_trades = await db.get_open_trades()
+
+    if not open_trades:
+        logger.info("✅ فحص صحي بعد إعادة التشغيل: لا توجد صفقات مفتوحة حالياً")
+        return
+
+    logger.info(f"🩺 بدء الفحص الصحي بعد إعادة التشغيل لـ {len(open_trades)} صفقة مفتوحة...")
+
+    report_lines = [f"🩺 <b>تقرير الفحص الصحي بعد إعادة التشغيل</b>\n"]
+    report_lines.append(f"عدد الصفقات المفتوحة: {len(open_trades)}\n")
+
+    for trade in open_trades:
+        symbol = trade["symbol"]
+        mint_address = trade["mint_address"]
+        trade_id = trade["id"]
+
+        try:
+            sim_result = await simulate_sell(
+                rpc_client=None,
+                wallet_pubkey="",
+                mint_address=mint_address,
+                pool_address="",
+                test_amount_lamports=1_000_000,
+            )
+            sim_ok, sim_reason = evaluate_simulation_result(sim_result)
+        except Exception as e:
+            sim_ok, sim_reason = False, f"تعذّر فحص محاكاة البيع: {e}"
+
+        # إعادة تهيئة تتبع القمة السعرية فوراً من السعر الحالي — بدل الانتظار
+        # لأول دورة فحص عادية (كل 5 ثوانٍ، فرق بسيط لكن نُفضّل الصراحة هنا)
+        price_status = "غير متوفر"
+        try:
+            data = await fetch_from_dexscreener(mint_address)
+            if data and data.price_usd:
+                _entry_price_usd[trade_id] = data.price_usd
+                _peak_price_usd[trade_id] = data.price_usd
+                price_status = f"${data.price_usd:.8f} (تمت إعادة تهيئة تتبع القمة من هذه اللحظة)"
+        except Exception as e:
+            price_status = f"تعذّر جلب السعر الحالي: {e}"
+
+        if sim_ok:
+            status_icon = "✅"
+            status_text = "طبيعية — لا يزال البيع ممكناً بشروط مقبولة"
+        else:
+            status_icon = "⚠️"
+            status_text = f"تحتاج انتباهاً: {sim_reason}"
+
+        report_lines.append(
+            f"{status_icon} <b>{symbol}</b>\n"
+            f"  الحالة: {status_text}\n"
+            f"  السعر الحالي: {price_status}\n"
+        )
+
+        logger.info(f"🩺 [{symbol}] محاكاة بيع: {'ناجحة' if sim_ok else 'فشلت'} — {sim_reason}")
+
+    report_lines.append(
+        "\nملاحظة: وقف الخسارة المتحرك والصارم كلاهما يعملان بشكل طبيعي من "
+        "الآن، بناءً على السعر الحالي كنقطة انطلاق جديدة لكل صفقة أعلاه."
+    )
+
+    await notifier.send_telegram_message("\n".join(report_lines))
+    logger.info("🩺 اكتمل الفحص الصحي بعد إعادة التشغيل، وأُرسل التقرير عبر تيليجرام")
+
+
 async def run_monitor_loop():
     """يبدأ مهمة مراقبة منفصلة لكل صفقة مفتوحة حالياً، ويضيف الجديدة تلقائياً."""
+    await run_post_restore_health_check()
+
     running_tasks = {}
     while True:
-        open_trades = db.get_open_trades()
+        open_trades = await db.get_open_trades()
         for trade in open_trades:
             tid = trade["id"]
             if tid not in running_tasks or running_tasks[tid].done():
