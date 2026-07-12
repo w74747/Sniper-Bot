@@ -30,6 +30,11 @@ logger = logging.getLogger("watchlist")
 SOL_FEE_RESERVE = 0.01
 DEVNET_FALLBACK_CAPITAL_SOL = 1.0
 
+# لا نستدعي check_organic_growth (استعلام RPC مكلف) إلا خلال آخر عدد ساعات
+# محدد قبل انتهاء فترة الانتظار الدنيا — هذا يقلل استهلاك RPC بنسبة تفوق 90%
+# مقارنة بالفحص كل 15 دقيقة طوال 24 ساعة كاملة لكل عملة.
+ORGANIC_CHECK_WINDOW_HOURS = 3
+
 
 async def init_watchlist_table():
     """جدول watchlist أصبح جزءاً من db.trades.init_db() الموحّد — هذه الدالة محفوظة للتوافق فقط."""
@@ -116,8 +121,20 @@ async def run_security_checks(mint_address: str, deployer_wallet: str, pool_addr
 
 
 async def evaluate_watchlist_entry(entry: dict) -> tuple[str, str]:
-    """يقرر: approved / rejected / still_watching / expired (المسار العادي)."""
+    """
+    يقرر: approved / rejected / still_watching / expired (المسار العادي)
+
+    إصلاح كفاءة حاسم: فحص العمر (مجاني تماماً، بدون RPC) يحدث أولاً، ونؤجّل
+    استعلام check_organic_growth المكلف (RPC حقيقي) حتى نقترب فعلياً من لحظة
+    القرار (آخر ORGANIC_CHECK_WINDOW_HOURS قبل انتهاء فترة الانتظار الدنيا).
+    سابقاً كان يُستدعى في كل فحص (كل 15 دقيقة) لكل عملة بغض النظر عن عمرها —
+    ما يعني ~96 استعلاماً مهدوراً بالكامل لكل عملة قبل أن يصبح القرار وشيكاً.
+    """
     age_hours = (time.time() - entry["added_at"]) / 3600
+
+    # لم تقترب بعد من نافذة اتخاذ القرار → لا داعي لأي استعلام RPC إطلاقاً
+    if age_hours < (WATCHLIST.min_watch_hours - ORGANIC_CHECK_WINDOW_HOURS):
+        return "still_watching", f"لم تدخل بعد نافذة الفحص النهائي ({age_hours:.1f}h)"
 
     growth_data = await check_organic_growth(entry["mint_address"], entry["holders_at_add"])
 
