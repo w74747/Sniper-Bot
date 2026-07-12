@@ -32,6 +32,19 @@ HELIUS_WS_URL = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
 CHAINSTACK_RPC_URL = os.getenv("CHAINSTACK_RPC_URL", "").strip()
 CHAINSTACK_WS_URL = os.getenv("CHAINSTACK_WS_URL", "").strip()
 
+# Ankr: مصدر HTTP احتياطي إضافي (WebSocket يتطلب باقة مدفوعة، فلا نستخدمه هنا)
+ANKR_RPC_URL = os.getenv("ANKR_RPC_URL", "").strip()
+
+# GetBlock: مصدر HTTP واحتياطي WebSocket أيضاً — فريتير يومي (50 ألف CU/يوم)
+GETBLOCK_RPC_URL = os.getenv("GETBLOCK_RPC_URL", "").strip()
+GETBLOCK_WS_URL = os.getenv("GETBLOCK_WS_URL", "").strip()
+
+# Solana العام: مزوّد Solana Foundation الرسمي، مجاني تماماً وبدون أي تسجيل أو
+# مفتاح — لكن حدوده صارمة جداً ووثوقيته متذبذبة (مصمم للطوارئ/الاختبار وليس
+# الاستخدام المكثف). نضعه كخيار احتياطي أخير في نهاية قائمة التناوب فقط،
+# يُستخدم حين يفشل كل المزودين المدفوعين/المسجَّلين معاً.
+SOLANA_PUBLIC_RPC_URL = "https://api.mainnet-beta.solana.com"
+
 # المزود الأساسي المُستخدم فعلياً: Chainstack إن أُضيف في Railway، وإلا
 # Helius تلقائياً (بدون كسر أي شيء إن لم تُضِف Chainstack إطلاقاً).
 PRIMARY_RPC_URL = CHAINSTACK_RPC_URL or HELIUS_RPC_URL
@@ -39,19 +52,10 @@ PRIMARY_WS_URL = CHAINSTACK_WS_URL or HELIUS_WS_URL
 
 # قائمة تناوب لمزودي WebSocket — عند فشل أحدهم (403 منتهي الصلاحية، 429 حد
 # معدل، إلخ) نتحول تلقائياً للتالي بدل التعطل الكامل بانتظار تدخل يدوي.
-WS_ENDPOINTS = [url for url in [CHAINSTACK_WS_URL, HELIUS_WS_URL] if url]
-
-# Ankr: مصدر HTTP احتياطي إضافي (WebSocket يتطلب باقة مدفوعة، فلا نستخدمه هنا)
-ANKR_RPC_URL = os.getenv("ANKR_RPC_URL", "").strip()
-
-# GetBlock: مصدر HTTP احتياطي إضافي — فريتير يومي (50 ألف CU/يوم، 20 طلب/ثانية)
-GETBLOCK_RPC_URL = os.getenv("GETBLOCK_RPC_URL", "").strip()
-
-# Solana العام: مزوّد Solana Foundation الرسمي، مجاني تماماً وبدون أي تسجيل أو
-# مفتاح — لكن حدوده صارمة جداً ووثوقيته متذبذبة (مصمم للطوارئ/الاختبار وليس
-# الاستخدام المكثف). نضعه كخيار احتياطي أخير في نهاية قائمة التناوب فقط،
-# يُستخدم حين يفشل كل المزودين المدفوعين/المسجَّلين معاً.
-SOLANA_PUBLIC_RPC_URL = "https://api.mainnet-beta.solana.com"
+# GetBlock أُضيف كمزود ثالث بعد أن انتهت صلاحية Chainstack واستُنفدت حصة
+# Helius معاً في نفس الوقت — درس مهم: كلما زاد عدد المزودين، قلّ احتمال
+# توقف الاكتشاف بالكامل.
+WS_ENDPOINTS = [url for url in [CHAINSTACK_WS_URL, HELIUS_WS_URL, GETBLOCK_WS_URL] if url]
 
 # قائمة تناوب (Round-robin) بين كل مزودي HTTP المتاحين فعلياً — يُبنى تلقائياً
 # من أي مزود أضفت مفتاحه في Railway، ويتجاهل الفارغ منها بصمت. عند فشل محاولة
