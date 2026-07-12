@@ -85,7 +85,7 @@ async def check_organic_growth(mint_address: str, holders_at_add: int) -> dict:
     نفسه، وليس قيداً منّا) — لذلك "عدد الحاملين" هنا هو تقريب وليس عدّاً دقيقاً.
     """
     try:
-        largest_accounts = await get_token_largest_accounts(mint_address, max_retries=5)
+        largest_accounts = await get_token_largest_accounts(mint_address, max_retries=6)
         current_holders = sum(1 for h in largest_accounts if float(h.get("amount", 0)) > 0)
     except Exception as e:
         logger.warning(f"تعذّر فحص النمو العضوي لـ {mint_address}: {e}")
