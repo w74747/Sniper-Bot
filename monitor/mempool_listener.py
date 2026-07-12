@@ -1,19 +1,25 @@
 """
-الاستماع لأحداث إطلاق سيولة جديدة (تهيئة pool جديد على Raydium/Pump.fun)
-عبر Alchemy WebSocket، ثم تشغيل كل الفلاتر
-بالترتيب: كلمات محظورة → on-chain → سمعة/GoPlus → محاكاة بيع.
+اكتشاف أحداث إطلاق سيولة جديدة (تهيئة pool جديد على Raydium/Pump.fun) عبر
+الاستقصاء الدوري (Polling) بدل WebSocket.
 
-عند اجتياز كل الفلاتر: إضافة العملة إلى watchlist (وليس شراء فوري) —
-حسب الاستراتيجية المتفق عليها.
+سبب هذا القرار المعماري: بعد تجربة 6 مزودين مختلفين (Chainstack, Helius,
+GetBlock, Ankr, dRPC, Solana العام)، اتضح أن WebSocket لـ Solana تحديداً
+يُعامَل كميزة مدفوعة على أغلب المنصات المجانية، بخلاف استدعاءات HTTP
+العادية (getSignaturesForAddress) التي تعمل بنجاح على كل مزودينا الحاليين
+بدون أي قيد إضافي. الاستقصاء كل بضع ثوانٍ فرق بسيط عملياً مقارنة بإشعار
+فوري، خصوصاً أن استراتيجيتنا أصلاً تعتمد على انتظار (24 ساعة أو دقائق
+للمسار السريع)، فالفارق بثوانٍ قليلة لا يُغيّر جوهر القرار.
+
+بعد الاكتشاف: تشغيل كل الفلاتر بالترتيب (كلمات محظورة → on-chain →
+سمعة/GoPlus → محاكاة بيع). عند اجتياز كل الفلاتر: إضافة العملة إلى
+watchlist (وليس شراء فوري) — حسب الاستراتيجية المتفق عليها.
 """
 import asyncio
 import json
 import logging
 from typing import Optional
 
-import websockets
-
-from config.settings import PRIMARY_WS_URL, WS_ENDPOINTS, DEX_ALLOWLIST
+from config.settings import DEX_ALLOWLIST
 from filters.onchain_filters import (
     TokenMetadata, run_all_onchain_filters, parse_spl_mint_account,
     KNOWN_BURN_ADDRESSES,
@@ -23,7 +29,8 @@ from monitor.watchlist import (
 )
 from db.trades import has_seen_mint_before, record_screening_result
 from utils.solana_rpc import (
-    get_account_info_base64, get_token_largest_accounts, rpc_call, get_transaction_via_helius,
+    get_account_info_base64, get_token_largest_accounts, rpc_call,
+    get_transaction_via_helius, get_signatures_for_address_polling,
 )
 
 logger = logging.getLogger("mempool_listener")
@@ -34,6 +41,11 @@ RAYDIUM_AMM_V4_PROGRAM_ID = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
 
 MONITORED_PROGRAM_IDS = [PUMP_FUN_PROGRAM_ID, RAYDIUM_AMM_V4_PROGRAM_ID]
 
+# كل كم ثانية نستقصي (Poll) عن معاملات جديدة لكل برنامج مراقَب
+POLL_INTERVAL_SECONDS = 4
+# كم توقيعاً نجلب كحد أقصى في كل دورة استقصاء واحدة لكل برنامج
+SIGNATURES_PER_POLL = 30
+
 
 def _get_all_instructions(tx_data: dict) -> list:
     """
@@ -42,8 +54,7 @@ def _get_all_instructions(tx_data: dict) -> list:
 
     هذا ضروري لأن الاستدعاء الفعلي لتعليمة Pump.fun/Raydium غالباً لا يكون
     تعليمة أساسية مباشرة، بل يُستدعى عبر برنامج وسيط (aggregator/router)
-    كـ Cross-Program Invocation (CPI) — وهذا هو السبب الفعلي وراء فشل
-    التحليل بصمت في كل المحاولات السابقة رغم نجاح جلب المعاملة نفسها.
+    كـ Cross-Program Invocation (CPI).
     """
     instructions = list(tx_data.get("transaction", {}).get("message", {}).get("instructions", []))
 
@@ -57,8 +68,8 @@ def _get_all_instructions(tx_data: dict) -> list:
 def _extract_program_id(ix: dict, account_keys: list) -> str:
     """
     يستخرج عنوان البرنامج من تعليمة واحدة، متوافقاً مع صيغتي jsonParsed
-    (حيث "programId" نص مباشر) والصيغة الخام "json" (حيث "programIdIndex"
-    رقم فهرسة يحتاج البحث عنه في account_keys).
+    (حيث "programId" نص مباشر) والصيغة الخام (حيث "programIdIndex" رقم
+    فهرسة يحتاج البحث عنه في account_keys).
     """
     if "programId" in ix:
         return ix["programId"]
@@ -73,8 +84,7 @@ def _extract_program_id(ix: dict, account_keys: list) -> str:
 def _extract_instruction_accounts(ix: dict, account_keys: list) -> list:
     """
     يستخرج قائمة عناوين الحسابات المستخدمة في تعليمة واحدة، متوافقاً مع
-    صيغتي jsonParsed (حيث "accounts" قائمة نصوص عناوين مباشرة) والصيغة
-    الخام (حيث "accounts" قائمة أرقام فهرسة تحتاج البحث عنها في account_keys).
+    صيغتي jsonParsed (نصوص عناوين مباشرة) والصيغة الخام (أرقام فهرسة).
     """
     raw_accounts = ix.get("accounts", [])
     if not raw_accounts:
@@ -93,7 +103,6 @@ def _extract_instruction_accounts(ix: dict, account_keys: list) -> list:
     return resolved
 
 
-
 def parse_pump_fun_create_instruction(tx_data: dict) -> Optional[dict]:
     """
     يحلل معاملة "create" من Pump.fun لاستخراج بيانات العملة الجديدة.
@@ -103,13 +112,6 @@ def parse_pump_fun_create_instruction(tx_data: dict) -> Optional[dict]:
     associated_bonding_curve, global, mpl_token_metadata, metadata,
     user (=المطور/الموقّع), system_program, token_program,
     associated_token_program, rent, event_authority, program]
-
-    نبحث في transaction.message.instructions عن تعليمة موجّهة لبرنامج
-    Pump.fun، ونستخرج account[0] كـ mint و account[7] كمطور (user).
-
-    ملاحظة: هذا الترتيب مبني على IDL منشور علناً لـ Pump.fun، لكن أي
-    تحديث مستقبلي من طرفهم للعقد قد يغيّر الترتيب — يُنصح بالتحقق دورياً
-    عبر مقارنة الاستخراج مع بيانات معروفة (مثل موقع pump.fun نفسه).
     """
     try:
         message = tx_data["transaction"]["message"]
@@ -135,11 +137,9 @@ def parse_pump_fun_create_instruction(tx_data: dict) -> Optional[dict]:
                 "pool_address": bonding_curve,
                 "deployer_wallet": deployer_wallet,
                 "dex": "pump.fun",
-                "lp_mint_address": None,  # Pump.fun لا يستخدم LP mint تقليدي (bonding curve)
+                "lp_mint_address": None,
                 # مهم جداً: حساب bonding curve (وATA الخاص به) يملك تقريباً كل
-                # العرض عند الإطلاق بتصميم Pump.fun نفسه — آمن ومتوقع تماماً
-                # (العقد يديره، وليس المطور). يجب استثناؤه من حساب "أكبر حامل"،
-                # وإلا نرفض كل عملة Pump.fun تقريباً خطأً بدون سبب حقيقي.
+                # العرض عند الإطلاق بتصميم Pump.fun نفسه — آمن ومتوقع تماماً.
                 "known_lp_token_accounts": [associated_bonding_curve],
             }
     except (KeyError, IndexError, TypeError) as e:
@@ -151,18 +151,7 @@ def parse_pump_fun_create_instruction(tx_data: dict) -> Optional[dict]:
 def parse_raydium_initialize_instruction(tx_data: dict) -> Optional[dict]:
     """
     يحلل معاملة "initialize2" من Raydium AMM V4 لاستخراج بيانات الـ pool الجديد.
-
-    تحذير صريح: بنية حسابات Raydium initialize2 أكثر تعقيداً وتغيّراً من
-    Pump.fun (18+ حساباً بترتيب دقيق يشمل: amm, amm_authority,
-    amm_open_orders, lp_mint, coin_mint, pc_mint, coin_vault, pc_vault...).
-    المواقع أدناه (lp_mint_index, coin_mint_index) هي **تقدير أولي غير
-    مُختبر على معاملة حقيقية فعلياً** — يجب التحقق منها بمقارنة مع معاملة
-    Raydium حقيقية معروفة (عبر Solscan مثلاً) قبل الاعتماد عليها في
-    قرارات شراء فعلية بأموال حقيقية.
-
-    TODO حرج قبل الاستخدام الحقيقي: تحقق يدوياً من هذه المواقع بفحص
-    معاملة "initialize2" حقيقية على solscan.io وتأكيد أي حساب هو فعلاً
-    lp_mint وأيها coin_mint (العملة الجديدة).
+    تحذير: مواقع الحسابات هنا تقديرية وغير مُختبرة على معاملة حقيقية بعد.
     """
     try:
         message = tx_data["transaction"]["message"]
@@ -178,10 +167,9 @@ def parse_raydium_initialize_instruction(tx_data: dict) -> Optional[dict]:
             if len(ix_accounts) < 10:
                 continue
 
-            # TODO: هذه المواقع تقديرية — تحتاج تأكيداً على معاملة حقيقية
             amm_address = ix_accounts[4]
             lp_mint = ix_accounts[7]
-            coin_mint = ix_accounts[8]  # العملة الجديدة المفترضة (غير مؤكدة)
+            coin_mint = ix_accounts[8]
 
             logger.warning(
                 "تحليل Raydium initialize2 يستخدم مواقع حسابات غير مُختبرة بعد — "
@@ -192,7 +180,7 @@ def parse_raydium_initialize_instruction(tx_data: dict) -> Optional[dict]:
                 "mint_address": coin_mint,
                 "pool_address": amm_address,
                 "lp_mint_address": lp_mint,
-                "deployer_wallet": "",  # يحتاج تحديداً إضافياً من fee payer المعاملة
+                "deployer_wallet": "",
                 "dex": "raydium",
             }
     except (KeyError, IndexError, TypeError) as e:
@@ -202,29 +190,12 @@ def parse_raydium_initialize_instruction(tx_data: dict) -> Optional[dict]:
 
 
 async def fetch_token_metadata(pool_event: dict) -> TokenMetadata:
-    """
-    يبني TokenMetadata فعلياً من بيانات الحدث + استعلامات RPC حقيقية:
-    1. getAccountInfo على mint address → فك تشفير mint_authority/freeze_authority/supply
-    2. getTokenLargestAccounts على mint address → حساب نسبة محفظة المطور وأكبر حامل
-    3. getTokenLargestAccounts على lp_mint_address (إن توفر) → نسبة حرق/قفل السيولة
-
-    ملاحظة مهمة: pool_event يجب أن يحتوي على الحقول التالية (تُملأ من
-    run_mempool_listener عند فك تشفير حدث إنشاء الـ pool):
-    mint_address, symbol, name, description, deployer_wallet, lp_mint_address
-    """
+    """يبني TokenMetadata فعلياً من بيانات الحدث + استعلامات RPC حقيقية."""
     mint_address = pool_event["mint_address"]
 
-    # 1) قراءة حالة العقد الأساسية (mint/freeze authority + supply)
     mint_data_b64 = await get_account_info_base64(mint_address)
     mint_info = parse_spl_mint_account(mint_data_b64)
 
-    # 2) توزيع الحيازة: أكبر الحاملين لهذه العملة
-    # ملاحظة: بعض عملات Pump.fun الحديثة تُصدَر عبر برنامج Token-2022، وقد
-    # يرفضها getTokenLargestAccounts بخطأ "not a Token mint" رغم أنها عملة
-    # صالحة فعلياً. نتعامل مع هذا بأمان (fail-safe): لا نُسقط العملة بخطأ
-    # تقني، لكن أيضاً لا نفترض توزيعاً "نظيفاً" (0%) — بل نضع قيماً تجعل
-    # الفلاتر اللاحقة ترفضها لعدم القدرة على التحقق، اتساقاً مع مبدأ
-    # "الرفض عند عدم اليقين" المتبع في بقية المشروع.
     try:
         largest_accounts = await get_token_largest_accounts(mint_address)
         holder_data_available = True
@@ -235,7 +206,7 @@ async def fetch_token_metadata(pool_event: dict) -> TokenMetadata:
         largest_accounts = []
         holder_data_available = False
 
-    total_supply = mint_info["supply"] or 1  # تجنب القسمة على صفر
+    total_supply = mint_info["supply"] or 1
 
     deployer_wallet = pool_event.get("deployer_wallet", "")
     dev_wallet_pct = 0.0
@@ -248,14 +219,13 @@ async def fetch_token_metadata(pool_event: dict) -> TokenMetadata:
         address = holder.get("address", "")
 
         if address in lp_ata_addresses:
-            continue  # نتجاهل حسابات السيولة نفسها عند حساب "أكبر حامل فردي"
+            continue
 
         if address == deployer_wallet:
             dev_wallet_pct = max(dev_wallet_pct, pct)
 
         top_holder_pct_excluding_lp = max(top_holder_pct_excluding_lp, pct)
 
-    # 3) نسبة حرق/قفل السيولة — عبر فحص أكبر حاملي عملة الـ LP (إن توفر عنوانها)
     lp_burned_or_locked_pct = 0.0
     lp_mint_address = pool_event.get("lp_mint_address")
     if lp_mint_address:
@@ -289,21 +259,19 @@ async def fetch_token_metadata(pool_event: dict) -> TokenMetadata:
         dev_wallet_pct=dev_wallet_pct,
         top_holder_pct_excluding_lp=top_holder_pct_excluding_lp,
         holder_data_available=holder_data_available,
-        is_standard_spl_token=True,  # مضمون طالما نجح فك تشفير SPL Mint القياسي
-        has_transfer_restriction_hooks=False,  # TODO: فحص Token-2022 transfer hooks إن وُجدت
-        has_referral_or_commission_function=False,  # يحتاج تحليل bytecode العقد (خارج نطاق RPC البسيط)
+        is_standard_spl_token=True,
+        has_transfer_restriction_hooks=False,
+        has_referral_or_commission_function=False,
     )
 
 
 async def process_new_pool_event(pool_event: dict):
     dex = pool_event.get("dex", "").lower()
     if dex not in DEX_ALLOWLIST:
-        return  # تجاهل صامت — منصة غير مدرجة في القائمة المسموحة
+        return
 
     mint_address = pool_event.get("mint_address", "")
 
-    # فحص عدم التكرار: هل رأينا هذه العملة من قبل (صفقة سابقة أو في watchlist)؟
-    # هذا يمنع "نسيان" قرارات سابقة عند تكرار حدث من الشبكة أو إعادة تشغيل البوت.
     if await has_seen_mint_before(mint_address) or await is_already_in_watchlist(mint_address):
         logger.debug(f"تجاهل {mint_address} — تم رصدها/التعامل معها من قبل")
         return
@@ -311,12 +279,9 @@ async def process_new_pool_event(pool_event: dict):
     try:
         meta = await fetch_token_metadata(pool_event)
     except Exception as e:
-        # مبدأ fail-safe: أي فشل في قراءة بيانات العقد = تجاهل العملة، وليس قبولها
         logger.warning(f"تعذّر قراءة بيانات العقد لـ {pool_event.get('mint_address')}: {e}")
         return
 
-    # المرحلة 1: الفلاتر الآلية الفورية (كلمات + عرض + توزيع + قابلية تحويل)
-    # هذه فقط تعتمد على بيانات on-chain مباشرة، فلا تعاني من فارق الفهرسة.
     onchain_result = run_all_onchain_filters(meta)
     if not onchain_result.passed:
         logger.info(f"رفض {meta.symbol}: {onchain_result.reason}")
@@ -325,13 +290,6 @@ async def process_new_pool_event(pool_event: dict):
         )
         return
 
-    # ملاحظة معمارية مهمة: فحص GoPlus ومحاكاة البيع لا يُشغَّلان هنا إطلاقاً.
-    # عملة عمرها ثوانٍ لا تملك GoPlus بيانات كافية عنها بعد (يفشل الفحص دائماً
-    # تقريباً بسبب فارق الفهرسة، وليس بسبب جودة العملة الفعلية) — هذا يتناقض
-    # مع استراتيجيتنا الأصلية (انتظار 24-72 ساعة قبل القرار النهائي). لذلك
-    # نضيف العملة لـ watchlist بمجرد اجتياز الفلاتر الآلية فقط، ونؤجّل فحص
-    # GoPlus/محاكاة البيع إلى monitor/watchlist.py حيث تُفحصان عند انتهاء
-    # فترة الانتظار الدنيا، حين تكون بياناتهما متوفرة فعلياً وذات معنى حقيقي.
     await record_screening_result(
         mint_address, meta.symbol, dex, "added_to_watchlist", "onchain_passed",
         f"اجتازت الفلاتر الآلية: {onchain_result.reason} — بانتظار فحص GoPlus/البيع لاحقاً"
@@ -361,7 +319,6 @@ async def fetch_and_parse_transaction(signature: str) -> Optional[dict]:
         return None
 
     if not tx_data:
-        logger.info(f"⚠️ getTransaction رجع فارغاً (None) لـ {signature[:16]}...")
         return None
 
     event = parse_pump_fun_create_instruction(tx_data)
@@ -372,230 +329,108 @@ async def fetch_and_parse_transaction(signature: str) -> Optional[dict]:
     if event:
         return event
 
-    # تشخيص مؤقت: لماذا فشلت كلتا المحاولتين؟ نطبع كل البرامج التي ظهرت فعلياً
-    # في التعليمات (أساسية + متداخلة) لمقارنتها بعناوين البرامج التي نبحث عنها.
-    try:
-        message = tx_data["transaction"]["message"]
-        account_keys = message["accountKeys"]
-        all_instructions = _get_all_instructions(tx_data)
-
-        program_ids_found = sorted(set(
-            _extract_program_id(ix, account_keys) for ix in all_instructions
-        ))
-        logger.info(
-            f"🔍 فشل التطابق لـ {signature[:16]}... — "
-            f"عدد التعليمات: {len(all_instructions)}, "
-            f"البرامج الموجودة فعلياً: {program_ids_found}"
-        )
-    except Exception as diag_error:
-        logger.info(f"🔍 فشل التشخيص نفسه لـ {signature[:16]}...: {diag_error}")
-
     return None
 
 
-async def _run_single_websocket_session(ws_url: str):
+async def _process_signature_with_timing(signature: str, semaphore: asyncio.Semaphore):
     """
-    جلسة اتصال واحدة — تُغلق تلقائياً عند أي انقطاع، ويلتقطها المستدعي لإعادة المحاولة.
-
-    مهم: كل حدث مرشّح يُعالج في مهمة (Task) منفصلة تماماً عبر asyncio.create_task،
-    بدل معالجته تسلسلياً داخل نفس الحلقة. هذا ضروري لأن المعالجة الكاملة لحدث
-    واحد (Alchemy + GoPlus + Jupiter، مع احتمال إعادة محاولات) قد تستغرق ثوانٍ،
-    ومعدل وصول الأحداث الفعلي على الشبكة أسرع من ذلك بكثير — فلو عالجنا تسلسلياً
-    لتراكمت الأحداث في طابور غير مرئي وبدا الأمر وكأن شيئاً لا يحدث، رغم أن
-    الكود يعمل، فقط ببطء شديد خلف الكواليس دون أي رسالة تدل على ذلك.
-
-    نستخدم Semaphore لتحديد عدد المعالجات المتزامنة المسموحة (5 كحد أقصى)
-    لتفادي إغراق Alchemy/GoPlus/Jupiter بطلبات متزامنة كثيرة جداً دفعة واحدة.
+    يعالج توقيعاً واحداً (معاملة واحدة) ضمن حد التزامن المسموح، مع مهلة قصوى
+    صارمة (45 ثانية) لضمان ظهور نتيجة ما مهما حدث، بدل التعليق الصامت.
     """
-    subscribe_id = 1
-    pending_subscriptions = {}  # id -> program_id، لمطابقة كل رد تأكيد بالبرنامج الصحيح
+    async with semaphore:
+        start_time = asyncio.get_event_loop().time()
+        try:
+            await asyncio.wait_for(_do_process(signature, start_time), timeout=45)
+        except asyncio.TimeoutError:
+            logger.error(
+                f"⏱️ انتهت المهلة القصوى (45s) لمعالجة {signature[:16]}... بدون أي استجابة"
+            )
+        except Exception as e:
+            logger.error(
+                f"خطأ غير متوقع أثناء معالجة {signature[:16]}...: "
+                f"{type(e).__name__}: {e} "
+                f"(بعد {asyncio.get_event_loop().time() - start_time:.1f}s)"
+            )
+
+
+async def _do_process(signature: str, start_time: float):
+    """الجسم الفعلي لمعالجة توقيع واحد: جلب + تحليل + تشغيل الفلاتر."""
+    pool_event = await fetch_and_parse_transaction(signature)
+    if pool_event:
+        logger.info(
+            f"تم استخراج بيانات عملة جديدة فعلياً: {pool_event.get('mint_address')} "
+            f"(معالجة الاستخراج: {asyncio.get_event_loop().time() - start_time:.1f}s)"
+        )
+        await process_new_pool_event(pool_event)
+        logger.info(
+            f"انتهت المعالجة الكاملة لـ {signature[:16]}... "
+            f"(الوقت الكلي: {asyncio.get_event_loop().time() - start_time:.1f}s)"
+        )
+    else:
+        logger.debug(f"لم يُتعرّف على معاملة {signature[:16]}... كإنشاء عملة جديدة")
+
+
+async def poll_for_new_pool_events():
+    """
+    الحلقة الرئيسية للاكتشاف: تستقصي (Poll) كل برنامج مراقَب دورياً بحثاً عن
+    توقيعات معاملات جديدة منذ آخر فحص (باستخدام "until" لتفادي تكرار نفس
+    المعاملات)، وتُشغّل معالجة كل توقيع جديد في مهمة منفصلة (Task) بحد أقصى
+    5 معالجات متزامنة، تماماً كما كان الحال سابقاً مع WebSocket.
+    """
+    last_signatures = {pid: None for pid in MONITORED_PROGRAM_IDS}
     processing_semaphore = asyncio.Semaphore(5)
     background_tasks: set = set()
 
-    async def _process_event_with_timing(signature: str):
-        """
-        يعالج حدثاً واحداً مع تسجيل التوقيت الكامل، ضمن حد التزامن المسموح.
+    logger.info("بدء الاستقصاء الدوري (Polling) لأحداث السيولة الجديدة...")
 
-        ملاحظة حرجة: نستخدم asyncio.wait_for بمهلة قصوى صارمة (45 ثانية) لأن
-        بعض العمليات المتزامنة (blocking) مثل استدعاءات sqlite3 يمكن أن تُجمّد
-        المعالجة بصمت تماماً بدون أي استثناء يظهر — هذا "شبكة أمان" تضمن ظهور
-        نتيجة ما (نجاح/فشل/انتهاء مهلة) خلال وقت محدد مهما حدث، بدل الصمت الأبدي.
-        """
-        async with processing_semaphore:
-            start_time = asyncio.get_event_loop().time()
+    while True:
+        for program_id in MONITORED_PROGRAM_IDS:
             try:
-                await asyncio.wait_for(_do_process(signature, start_time), timeout=45)
-            except asyncio.TimeoutError:
-                logger.error(
-                    f"⏱️ انتهت المهلة القصوى (45s) لمعالجة {signature[:16]}... "
-                    f"بدون أي استجابة — هذا يؤكد وجود تعليق فعلي (hang) في مكان ما"
+                sigs = await get_signatures_for_address_polling(
+                    program_id,
+                    limit=SIGNATURES_PER_POLL,
+                    until=last_signatures[program_id],
                 )
             except Exception as e:
-                # حماية ضرورية: بدون هذا، أي استثناء داخل مهمة خلفية (Task) يُفقد
-                # صامتاً تماماً في asyncio ولا يظهر في أي سجل إطلاقاً.
-                logger.error(
-                    f"خطأ غير متوقع أثناء معالجة {signature[:16]}...: "
-                    f"{type(e).__name__}: {e} "
-                    f"(بعد {asyncio.get_event_loop().time() - start_time:.1f}s)"
+                logger.warning(f"فشل استقصاء البرنامج {program_id[:16]}...: {type(e).__name__}: {e}")
+                continue
+
+            if not sigs:
+                continue
+
+            # النتائج بترتيب الأحدث أولاً؛ نحدّث نقطة المرجع للمرة القادمة،
+            # ونعالج بترتيب زمني تصاعدي (الأقدم أولاً) للحفاظ على الترتيب المنطقي.
+            last_signatures[program_id] = sigs[0]["signature"]
+
+            for sig_info in reversed(sigs):
+                if sig_info.get("err"):
+                    continue  # تجاهل المعاملات الفاشلة على الشبكة نفسها
+
+                signature = sig_info["signature"]
+                task = asyncio.create_task(
+                    _process_signature_with_timing(signature, processing_semaphore)
                 )
+                background_tasks.add(task)
+                task.add_done_callback(background_tasks.discard)
 
-    async def _do_process(signature: str, start_time: float):
-        """الجسم الفعلي للمعالجة — مفصول لتسهيل تطبيق المهلة القصوى عليه بالكامل."""
-        pool_event = await fetch_and_parse_transaction(signature)
-        if pool_event:
-            logger.info(
-                f"تم استخراج بيانات عملة جديدة فعلياً: {pool_event.get('mint_address')} "
-                f"(معالجة الاستخراج: {asyncio.get_event_loop().time() - start_time:.1f}s)"
-            )
-            await process_new_pool_event(pool_event)
-            logger.info(
-                f"انتهت المعالجة الكاملة لـ {signature[:16]}... "
-                f"(الوقت الكلي: {asyncio.get_event_loop().time() - start_time:.1f}s)"
-            )
-        else:
-            logger.debug(
-                f"اجتاز الفلتر لكن فشل التحليل: {signature[:16]}... "
-                f"({asyncio.get_event_loop().time() - start_time:.1f}s)"
-            )
-
-    async def _heartbeat_logger():
-        """يطبع كل 15 ثانية عدد المهام قيد المعالجة حالياً — يوضح إن كان هناك تراكم (backlog) ضخم."""
-        while True:
-            await asyncio.sleep(15)
-            logger.info(f"💓 نبضة: {len(background_tasks)} مهمة قيد المعالجة حالياً")
-
-    async with websockets.connect(
-        ws_url, ping_interval=20, ping_timeout=20
-    ) as ws:
-        heartbeat_task = asyncio.create_task(_heartbeat_logger())
-        try:
-            for program_id in MONITORED_PROGRAM_IDS:
-                pending_subscriptions[subscribe_id] = program_id
-                await ws.send(json.dumps({
-                    "jsonrpc": "2.0",
-                    "id": subscribe_id,
-                    "method": "logsSubscribe",
-                    "params": [
-                        {"mentions": [program_id]},
-                        {"commitment": "confirmed"},
-                    ],
-                }))
-                subscribe_id += 1
-
-            confirmed_count = 0
-            expected_count = len(MONITORED_PROGRAM_IDS)
-
-            async for message in ws:
-                try:
-                    data = json.loads(message)
-
-                    # التحقق الصريح من ردود تأكيد/فشل الاشتراك (قبل بدء استقبال logs الفعلية)
-                    if confirmed_count < expected_count and "id" in data and "params" not in data:
-                        req_id = data.get("id")
-                        program_id = pending_subscriptions.get(req_id, "غير معروف")
-                        if "error" in data:
-                            logger.error(
-                                f"فشل الاشتراك في برنامج {program_id}: {data['error']}"
-                            )
-                        elif "result" in data:
-                            logger.info(
-                                f"نجح الاشتراك في برنامج {program_id} (subscription id: {data['result']})"
-                            )
-                        confirmed_count += 1
-                        continue
-
-                    if "params" not in data:
-                        logger.debug(f"رسالة غير متوقعة من WebSocket تم تجاهلها: {message[:200]}")
-                        continue
-
-                    value = data["params"].get("result", {}).get("value", {})
-                    signature = value.get("signature")
-                    logs = value.get("logs", [])
-
-                    if not signature:
-                        continue
-
-                    logs_text = " ".join(logs)
-                    # فلترة دقيقة بنص التعليمة الفعلي وليس كلمة عامة — لأن "create"
-                    # وحدها تظهر في أي معاملة عادية بسبب إنشاء ATA تلقائياً لكل عملية
-                    is_pump_create = "Instruction: Create" in logs_text
-                    is_raydium_init = "Instruction: Initialize2" in logs_text
-                    if not is_pump_create and not is_raydium_init:
-                        continue
-
-                    logger.info(f"حدث مرشّح مكتشف: {signature[:16]}...")
-
-                    # معالجة في مهمة منفصلة — لا ننتظرها هنا، لنستمر باستقبال الأحداث التالية فوراً
-                    task = asyncio.create_task(_process_event_with_timing(signature))
-                    background_tasks.add(task)
-                    task.add_done_callback(background_tasks.discard)
-
-                except Exception as e:
-                    logger.error(f"خطأ في معالجة رسالة واحدة: {type(e).__name__}: {e}")
-        finally:
-            heartbeat_task.cancel()
+        await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
 
 async def run_mempool_listener():
     """
-    يشترك فعلياً عبر logsSubscribe لمراقبة أي معاملة تذكر برنامج Pump.fun
-    أو Raydium AMM V4. يتناوب تلقائياً بين كل مزودي WebSocket المتاحين
-    (WS_ENDPOINTS) عند الفشل المتكرر — بدل التعطل الكامل بانتظار تدخل يدوي
-    عندما تنتهي صلاحية مزود واحد (كما حدث فعلياً مع انتهاء تجربة Chainstack:
-    403 متكرر لأكثر من ساعتين متواصلتين بدون أي اكتشاف).
+    نقطة الدخول الرئيسية لاكتشاف عملات جديدة — تستخدم الاستقصاء الدوري
+    (Polling) بدل WebSocket (راجع تعليق أعلى الملف لشرح السبب).
     """
     await init_watchlist_table()
-    logger.info("بدء الاستماع لأحداث السيولة الجديدة...")
 
-    endpoints = WS_ENDPOINTS or [PRIMARY_WS_URL]
-    endpoint_index = 0
     reconnect_delay = 5
-    rate_limit_delay = 300
-    consecutive_failures_on_current = 0
-    MAX_FAILURES_BEFORE_ROTATE = 3
-
     while True:
-        current_ws_url = endpoints[endpoint_index % len(endpoints)]
         try:
-            await _run_single_websocket_session(current_ws_url)
-            reconnect_delay = 5
-            consecutive_failures_on_current = 0
-        except (websockets.exceptions.ConnectionClosed, ConnectionResetError) as e:
-            logger.warning(f"انقطع اتصال WebSocket: {type(e).__name__}: {e} — إعادة الاتصال خلال {reconnect_delay}s")
+            await poll_for_new_pool_events()
+        except Exception as e:
+            logger.error(
+                f"خطأ غير متوقع في حلقة الاستقصاء: {type(e).__name__}: {e} — "
+                f"إعادة المحاولة خلال {reconnect_delay}s"
+            )
             await asyncio.sleep(reconnect_delay)
             reconnect_delay = min(reconnect_delay * 2, 60)
-        except Exception as e:
-            error_text = str(e)
-            consecutive_failures_on_current += 1
-
-            # 403 = رفض/انتهاء صلاحية مؤكد ونهائي (وليس ازدحاماً مؤقتاً) —
-            # لا فائدة من الانتظار 3 محاولات، ننتقل فوراً من أول فشل.
-            rotate_threshold = 1 if "403" in error_text else MAX_FAILURES_BEFORE_ROTATE
-
-            if consecutive_failures_on_current >= rotate_threshold and len(endpoints) > 1:
-                logger.error(
-                    f"⚠️ فشل {consecutive_failures_on_current} محاولة/محاولات على "
-                    f"{current_ws_url[:40]}... — التحول لمزود WebSocket التالي في القائمة"
-                )
-                endpoint_index += 1
-                consecutive_failures_on_current = 0
-                await asyncio.sleep(5)
-                continue
-
-            if "429" in error_text:
-                logger.error(
-                    f"⚠️ خطأ 429 (تجاوز حد المعدل) من مزود WebSocket ({current_ws_url[:40]}...) — "
-                    f"إعادة الاتصال بعد تأخير طويل ({rate_limit_delay}s) لتفادي تجديد الحظر: {error_text}"
-                )
-                await asyncio.sleep(rate_limit_delay)
-                rate_limit_delay = min(rate_limit_delay * 2, 1800)
-            elif "403" in error_text:
-                logger.error(
-                    f"⚠️ خطأ 403 (رفض/انتهاء صلاحية) من مزود WebSocket ({current_ws_url[:40]}...) — {error_text}"
-                )
-                await asyncio.sleep(reconnect_delay)
-                reconnect_delay = min(reconnect_delay * 2, 60)
-            else:
-                logger.error(f"خطأ غير متوقع في جلسة WebSocket: {type(e).__name__}: {e} — إعادة الاتصال خلال {reconnect_delay}s")
-                await asyncio.sleep(reconnect_delay)
-                reconnect_delay = min(reconnect_delay * 2, 60)
