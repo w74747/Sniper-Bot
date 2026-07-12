@@ -1,11 +1,16 @@
 """
 نقطة الدخول الرئيسية للبوت — ينسّق بين كل الوحدات:
 
-1. الاستماع لعملات جديدة (mempool_listener)
-2. تشغيل الفلاتر الآلية الفورية (on-chain)
-3. عند الاجتياز: وضع العملة في watchlist
-4. مسار عادي (24-72 ساعة) + مسار سريع (زخم صاروخي، كل 30 ثانية) بالتوازي
+1. الاستماع لعملات جديدة (mempool_listener) [يُبنى في monitor/mempool_listener.py]
+2. تشغيل الفلاتر الآلية الفورية (on-chain + reputation + sell simulation)
+3. عند الاجتياز: وضع العملة في watchlist لفترة انتظار (24-72 ساعة) بدل شراء فوري
+   [حسب القرار الاستراتيجي: التخلي عن السرعة اللحظية لصالح تقييم أعمق]
+4. بعد فترة الانتظار ومراجعة المؤشرات العضوية: تنفيذ الشراء
 5. بدء المراقبة المزدوجة المستمرة بعد كل شراء (post_trade_monitor)
+
+هذا الملف حالياً "هيكل تنسيقي" (orchestrator scaffold) — كل TODO محدد بدقة
+في الوحدات الفرعية يجب إكماله وربطه فعلياً بمصادر بيانات حقيقية (Helius,
+Jupiter, GoPlus) قبل التشغيل الفعلي.
 """
 import asyncio
 import logging
@@ -16,6 +21,8 @@ from monitor.post_trade_monitor import run_monitor_loop
 from monitor.watchlist import run_watchlist_loop, run_fast_track_loop
 from monitor.mempool_listener import run_mempool_listener
 
+# إنشاء مجلد logs تلقائياً إن لم يكن موجوداً — ضروري على خوادم سحابية مثل Railway
+# لأن Git لا يرفع المجلدات الفارغة، فالمجلد قد لا يكون موجوداً فعلياً بعد النشر
 os.makedirs("logs", exist_ok=True)
 
 logging.basicConfig(
@@ -26,19 +33,21 @@ logging.basicConfig(
         logging.StreamHandler(),
     ],
 )
+# حماية: حتى لو رُفع المستوى العام لـ DEBUG مستقبلاً للتشخيص، لا نريد إغراق
+# السجلات بتفاصيل داخلية من مكتبة websockets نفسها (نبضات ping/pong وغيرها)
 logging.getLogger("websockets").setLevel(logging.WARNING)
 logger = logging.getLogger("main")
 
 
 async def main():
     logger.info("بدء تشغيل البوت...")
-    db.init_db()
+    await db.init_db()
 
     tasks = [
-        asyncio.create_task(run_mempool_listener()),
-        asyncio.create_task(run_watchlist_loop()),     # المسار العادي (24-72 ساعة)
+        asyncio.create_task(run_mempool_listener()),  # يحتاج إكمال TODOs قبل التشغيل الفعلي
+        asyncio.create_task(run_watchlist_loop()),     # مراجعة قائمة الانتظار العادية (24-72 ساعة)
         asyncio.create_task(run_fast_track_loop()),    # المسار السريع (رصد الانطلاق الصاروخي)
-        asyncio.create_task(run_monitor_loop()),
+        asyncio.create_task(run_monitor_loop()),       # مراقبة الصفقات المفتوحة (جاهز)
     ]
     await asyncio.gather(*tasks)
 
