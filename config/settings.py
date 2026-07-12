@@ -44,6 +44,7 @@ GETBLOCK_WS_URL = os.getenv("GETBLOCK_WS_URL", "").strip()
 # الاستخدام المكثف). نضعه كخيار احتياطي أخير في نهاية قائمة التناوب فقط،
 # يُستخدم حين يفشل كل المزودين المدفوعين/المسجَّلين معاً.
 SOLANA_PUBLIC_RPC_URL = "https://api.mainnet-beta.solana.com"
+SOLANA_PUBLIC_WS_URL = "wss://api.mainnet-beta.solana.com"
 
 # المزود الأساسي المُستخدم فعلياً: Chainstack إن أُضيف في Railway، وإلا
 # Helius تلقائياً (بدون كسر أي شيء إن لم تُضِف Chainstack إطلاقاً).
@@ -55,7 +56,7 @@ PRIMARY_WS_URL = CHAINSTACK_WS_URL or HELIUS_WS_URL
 # GetBlock أُضيف كمزود ثالث بعد أن انتهت صلاحية Chainstack واستُنفدت حصة
 # Helius معاً في نفس الوقت — درس مهم: كلما زاد عدد المزودين، قلّ احتمال
 # توقف الاكتشاف بالكامل.
-WS_ENDPOINTS = [url for url in [CHAINSTACK_WS_URL, HELIUS_WS_URL, GETBLOCK_WS_URL] if url]
+WS_ENDPOINTS = [url for url in [CHAINSTACK_WS_URL, HELIUS_WS_URL, GETBLOCK_WS_URL, SOLANA_PUBLIC_WS_URL] if url]
 
 # قائمة تناوب (Round-robin) بين كل مزودي HTTP المتاحين فعلياً — يُبنى تلقائياً
 # من أي مزود أضفت مفتاحه في Railway، ويتجاهل الفارغ منها بصمت. عند فشل محاولة
