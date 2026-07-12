@@ -476,4 +476,126 @@ async def _run_single_websocket_session(ws_url: str):
                     "id": subscribe_id,
                     "method": "logsSubscribe",
                     "params": [
-        
+                        {"mentions": [program_id]},
+                        {"commitment": "confirmed"},
+                    ],
+                }))
+                subscribe_id += 1
+
+            confirmed_count = 0
+            expected_count = len(MONITORED_PROGRAM_IDS)
+
+            async for message in ws:
+                try:
+                    data = json.loads(message)
+
+                    # التحقق الصريح من ردود تأكيد/فشل الاشتراك (قبل بدء استقبال logs الفعلية)
+                    if confirmed_count < expected_count and "id" in data and "params" not in data:
+                        req_id = data.get("id")
+                        program_id = pending_subscriptions.get(req_id, "غير معروف")
+                        if "error" in data:
+                            logger.error(
+                                f"فشل الاشتراك في برنامج {program_id}: {data['error']}"
+                            )
+                        elif "result" in data:
+                            logger.info(
+                                f"نجح الاشتراك في برنامج {program_id} (subscription id: {data['result']})"
+                            )
+                        confirmed_count += 1
+                        continue
+
+                    if "params" not in data:
+                        logger.debug(f"رسالة غير متوقعة من WebSocket تم تجاهلها: {message[:200]}")
+                        continue
+
+                    value = data["params"].get("result", {}).get("value", {})
+                    signature = value.get("signature")
+                    logs = value.get("logs", [])
+
+                    if not signature:
+                        continue
+
+                    logs_text = " ".join(logs)
+                    # فلترة دقيقة بنص التعليمة الفعلي وليس كلمة عامة — لأن "create"
+                    # وحدها تظهر في أي معاملة عادية بسبب إنشاء ATA تلقائياً لكل عملية
+                    is_pump_create = "Instruction: Create" in logs_text
+                    is_raydium_init = "Instruction: Initialize2" in logs_text
+                    if not is_pump_create and not is_raydium_init:
+                        continue
+
+                    logger.info(f"حدث مرشّح مكتشف: {signature[:16]}...")
+
+                    # معالجة في مهمة منفصلة — لا ننتظرها هنا، لنستمر باستقبال الأحداث التالية فوراً
+                    task = asyncio.create_task(_process_event_with_timing(signature))
+                    background_tasks.add(task)
+                    task.add_done_callback(background_tasks.discard)
+
+                except Exception as e:
+                    logger.error(f"خطأ في معالجة رسالة واحدة: {type(e).__name__}: {e}")
+        finally:
+            heartbeat_task.cancel()
+
+
+async def run_mempool_listener():
+    """
+    يشترك فعلياً عبر logsSubscribe لمراقبة أي معاملة تذكر برنامج Pump.fun
+    أو Raydium AMM V4. يتناوب تلقائياً بين كل مزودي WebSocket المتاحين
+    (WS_ENDPOINTS) عند الفشل المتكرر — بدل التعطل الكامل بانتظار تدخل يدوي
+    عندما تنتهي صلاحية مزود واحد (كما حدث فعلياً مع انتهاء تجربة Chainstack:
+    403 متكرر لأكثر من ساعتين متواصلتين بدون أي اكتشاف).
+    """
+    await init_watchlist_table()
+    logger.info("بدء الاستماع لأحداث السيولة الجديدة...")
+
+    endpoints = WS_ENDPOINTS or [PRIMARY_WS_URL]
+    endpoint_index = 0
+    reconnect_delay = 5
+    rate_limit_delay = 300
+    consecutive_failures_on_current = 0
+    MAX_FAILURES_BEFORE_ROTATE = 3
+
+    while True:
+        current_ws_url = endpoints[endpoint_index % len(endpoints)]
+        try:
+            await _run_single_websocket_session(current_ws_url)
+            reconnect_delay = 5
+            consecutive_failures_on_current = 0
+        except (websockets.exceptions.ConnectionClosed, ConnectionResetError) as e:
+            logger.warning(f"انقطع اتصال WebSocket: {type(e).__name__}: {e} — إعادة الاتصال خلال {reconnect_delay}s")
+            await asyncio.sleep(reconnect_delay)
+            reconnect_delay = min(reconnect_delay * 2, 60)
+        except Exception as e:
+            error_text = str(e)
+            consecutive_failures_on_current += 1
+
+            # 403 = رفض/انتهاء صلاحية مؤكد ونهائي (وليس ازدحاماً مؤقتاً) —
+            # لا فائدة من الانتظار 3 محاولات، ننتقل فوراً من أول فشل.
+            rotate_threshold = 1 if "403" in error_text else MAX_FAILURES_BEFORE_ROTATE
+
+            if consecutive_failures_on_current >= rotate_threshold and len(endpoints) > 1:
+                logger.error(
+                    f"⚠️ فشل {consecutive_failures_on_current} محاولة/محاولات على "
+                    f"{current_ws_url[:40]}... — التحول لمزود WebSocket التالي في القائمة"
+                )
+                endpoint_index += 1
+                consecutive_failures_on_current = 0
+                await asyncio.sleep(5)
+                continue
+
+            if "429" in error_text:
+                logger.error(
+                    f"⚠️ خطأ 429 (تجاوز حد المعدل) من مزود WebSocket ({current_ws_url[:40]}...) — "
+                    f"إعادة الاتصال بعد تأخير طويل ({rate_limit_delay}s) لتفادي تجديد الحظر: {error_text}"
+                )
+                await asyncio.sleep(rate_limit_delay)
+                rate_limit_delay = min(rate_limit_delay * 2, 1800)
+            elif "403" in error_text:
+                logger.error(
+                    f"⚠️ خطأ 403 (رفض/انتهاء صلاحية) من مزود WebSocket ({current_ws_url[:40]}...) — {error_text}"
+                )
+                await asyncio.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 2, 60)
+            else:
+                logger.error(f"خطأ غير متوقع في جلسة WebSocket: {type(e).__name__}: {e} — إعادة الاتصال خلال {reconnect_delay}s")
+                await asyncio.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 2, 60)
