@@ -1,23 +1,23 @@
 """
-قائمة الانتظار (Watchlist): جوهر الاستراتيجية المتفق عليها.
+قائمة الانتظار (Watchlist) + المسار السريع (Fast Track).
 
-بدل الشراء الفوري عند اجتياز الفلاتر الآلية، تدخل العملة "قائمة مراقبة"
-لمدة 24-72 ساعة، خلالها نراقب مؤشرات عضوية حقيقية (نمو حاملين، تداول
-طبيعي، نشاط تطوير فعلي) قبل اتخاذ قرار الشراء النهائي.
+المسار العادي: 24-72 ساعة انتظار قبل فحص GoPlus/محاكاة البيع النهائي.
+المسار السريع: يعمل بالتوازي، يفحص كل 30 ثانية العملات الحديثة (<60 دقيقة)
+بحثاً عن "انطلاق صاروخي" (momentum)، ويُسرّع الشراء عند وجوده — لكن بنفس
+شروط الأمان الصارمة (GoPlus + محاكاة بيع)، بلا أي تنازل.
 
-هذا يعني تخلياً كاملاً عن ميزة "السرعة اللحظية" (وبالتالي لا حاجة لـ
-Jito/co-location) مقابل التزام حقيقي بمعايير الجدية والمشروعية.
+جدول watchlist نفسه أصبح الآن في Postgres (db/pool.py) بدل SQLite —
+يشارك نفس آلية التبديل التلقائي (أساسي/احتياطي) مع بقية قاعدة البيانات.
 """
 import asyncio
 import logging
-import os
-import sqlite3
 import time
 from dataclasses import dataclass
 from typing import Optional
 
 from config.settings import WATCHLIST, EXIT_STRATEGY, FAST_TRACK, USE_DEVNET
-from db.trades import DB_PATH, record_screening_result
+from db import pool
+from db.trades import record_screening_result
 from trading.executor import execute_buy
 from trading.swap_client import load_wallet_keypair
 from filters.reputation import evaluate_reputation
@@ -27,33 +27,14 @@ from utils.solana_rpc import get_token_largest_accounts, rpc_call, get_wallet_so
 
 logger = logging.getLogger("watchlist")
 
-# رصيد احتياطي ثابت (بالـ SOL) نُبقيه دائماً بلا مساس — لتغطية رسوم الشبكة
-# وإنشاء حسابات التوكن (ATA) المستقبلية، بدل استخدام الرصيد بالكامل حرفياً.
 SOL_FEE_RESERVE = 0.01
-
-# يُستخدم فقط في وضع DEVNET (حيث لا يوجد رصيد حقيقي على الإطلاق لقراءته)
 DEVNET_FALLBACK_CAPITAL_SOL = 1.0
 
 
-def init_watchlist_table(db_path: str = DB_PATH):
-    os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
-    conn = sqlite3.connect(db_path)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS watchlist (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            mint_address TEXT NOT NULL,
-            symbol TEXT,
-            pool_address TEXT,
-            dex TEXT,
-            deployer_wallet TEXT,
-            added_at REAL,
-            initial_filter_report TEXT,
-            holders_at_add INTEGER DEFAULT 0,
-            status TEXT DEFAULT 'watching'  -- watching / approved / rejected / expired
-        )
-    """)
-    conn.commit()
-    conn.close()
+async def init_watchlist_table():
+    """جدول watchlist أصبح جزءاً من db.trades.init_db() الموحّد — هذه الدالة محفوظة للتوافق فقط."""
+    from db.trades import init_db
+    await init_db()
 
 
 @dataclass
@@ -67,31 +48,26 @@ class WatchlistEntry:
     deployer_wallet: str = ""
 
 
-def add_to_watchlist(entry: WatchlistEntry, db_path: str = DB_PATH) -> int:
-    conn = sqlite3.connect(db_path)
-    cur = conn.execute(
+async def add_to_watchlist(entry: WatchlistEntry) -> int:
+    row = await pool.fetchrow(
         """INSERT INTO watchlist
            (mint_address, symbol, pool_address, dex, deployer_wallet,
             added_at, initial_filter_report, holders_at_add)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (entry.mint_address, entry.symbol, entry.pool_address, entry.dex,
-         entry.deployer_wallet, time.time(), entry.initial_filter_report,
-         entry.holders_at_add),
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id""",
+        entry.mint_address, entry.symbol, entry.pool_address, entry.dex,
+        entry.deployer_wallet, time.time(), entry.initial_filter_report,
+        entry.holders_at_add,
     )
-    conn.commit()
-    watch_id = cur.lastrowid
-    conn.close()
+    watch_id = row["id"]
     logger.info(f"تمت إضافة {entry.symbol} إلى قائمة المراقبة (#{watch_id})")
     return watch_id
 
 
-def is_already_in_watchlist(mint_address: str, db_path: str = DB_PATH) -> bool:
+async def is_already_in_watchlist(mint_address: str) -> bool:
     """يفحص إن كانت هذه العملة موجودة مسبقاً في watchlist بأي حالة (لمنع التكرار)."""
-    conn = sqlite3.connect(db_path)
-    row = conn.execute(
-        "SELECT 1 FROM watchlist WHERE mint_address = ? LIMIT 1", (mint_address,)
-    ).fetchone()
-    conn.close()
+    row = await pool.fetchrow(
+        "SELECT 1 FROM watchlist WHERE mint_address = $1 LIMIT 1", mint_address
+    )
     return row is not None
 
 
@@ -101,21 +77,9 @@ async def check_organic_growth(mint_address: str, holders_at_add: int) -> dict:
 
     ملاحظة تنفيذية مهمة (تقريب معروف ومقصود):
     getTokenLargestAccounts يرجع فقط أكبر 20 حاملاً كحد أقصى (قيد من Solana RPC
-    نفسه، وليس قيداً منّا) — لذلك "عدد الحاملين" هنا هو تقريب وليس عدّاً دقيقاً
-    لكل حاملي العملة. هذا كافٍ كمؤشر اتجاه (هل يتزايد التوزيع أم لا)، لكنه
-    ليس مصدراً دقيقاً 100%. لعدّ دقيق حقيقي، يلزم مصدر بيانات مخصص (indexer
-    كامل يتتبع كل حسابات التوكن)، وهو خارج نطاق استعلام RPC بسيط.
-
-    TODO المتبقي فعلاً (يحتاج خدمة خارجية، وليس RPC عادي):
-    - حجم تداول عضوي مقابل wash trading (يحتاج بيانات DEX تاريخية، مثل DexScreener API)
-    - نشاط GitHub فعلي إن وُجد رابط مستودع
-    - نمو متابعين Twitter/Telegram (لا بوتات)
+    نفسه، وليس قيداً منّا) — لذلك "عدد الحاملين" هنا هو تقريب وليس عدّاً دقيقاً.
     """
     try:
-        # max_retries=5: يغطي كل المزودين المتاحين بالتناوب (Chainstack, Helius,
-        # Ankr) — ضروري لأن بعض المزودين (مثل Chainstack المجاني) لا يدعمون
-        # هذه الدالة تحديداً (getTokenLargestAccounts) على العقد المشتركة،
-        # فيجب الانتقال تلقائياً للمزود التالي بدل التوقف عند أول رفض.
         largest_accounts = await get_token_largest_accounts(mint_address, max_retries=5)
         current_holders = sum(1 for h in largest_accounts if float(h.get("amount", 0)) > 0)
     except Exception as e:
@@ -127,16 +91,12 @@ async def check_organic_growth(mint_address: str, holders_at_add: int) -> dict:
     return {
         "current_holders": current_holders,
         "holders_growth": holders_growth,
-        "organic_volume_ratio": None,  # TODO: يحتاج DexScreener API أو مصدر مشابه
+        "organic_volume_ratio": None,
     }
 
 
 async def run_security_checks(mint_address: str, deployer_wallet: str, pool_address: str) -> tuple[bool, str]:
-    """
-    فحوصات الأمان المشتركة (GoPlus + محاكاة البيع) — يُستدعى من كلا المسارين:
-    المسار العادي (watchlist بعد 24-72 ساعة) والمسار السريع (fast-track عند
-    زخم قوي). استخراجها هنا يمنع تكرار نفس المنطق مرتين.
-    """
+    """فحوصات الأمان المشتركة (GoPlus + محاكاة البيع) — يُستدعى من كلا المسارين."""
     reputation_ok, reputation_reason = await evaluate_reputation(mint_address, deployer_wallet)
     if not reputation_ok:
         return False, f"فشلت فحوصات السمعة: {reputation_reason}"
@@ -156,16 +116,7 @@ async def run_security_checks(mint_address: str, deployer_wallet: str, pool_addr
 
 
 async def evaluate_watchlist_entry(entry: dict) -> tuple[str, str]:
-    """
-    يقرر: approved / rejected / still_watching / expired
-
-    مهم: فحص GoPlus ومحاكاة البيع يُشغَّلان هنا فقط — بعد مرور فترة الانتظار
-    الدنيا (min_watch_hours) — وليس لحظة الاكتشاف الأولى. هذا إصلاح معماري
-    مقصود: عملة عمرها ثوانٍ لا تملك GoPlus بيانات كافية عنها بعد (يفشل
-    الفحص دائماً تقريباً بسبب فارق الفهرسة، وليس بسبب جودة العملة)، بينما
-    بعد ساعات من الانتظار (كما تنص استراتيجيتنا الأصلية أصلاً) تكون هذه
-    البيانات متوفرة بيقين، فيصبح الفحص ذا معنى حقيقي.
-    """
+    """يقرر: approved / rejected / still_watching / expired (المسار العادي)."""
     age_hours = (time.time() - entry["added_at"]) / 3600
 
     growth_data = await check_organic_growth(entry["mint_address"], entry["holders_at_add"])
@@ -181,7 +132,6 @@ async def evaluate_watchlist_entry(entry: dict) -> tuple[str, str]:
             return "expired", "انتهت فترة المراقبة القصوى دون نمو عضوي كافٍ"
         return "still_watching", f"نمو عضوي غير كافٍ بعد ({age_hours:.1f}h)"
 
-    # النمو العضوي كافٍ ومرّت فترة الانتظار الدنيا → الآن فقط نفحص GoPlus ومحاكاة البيع
     security_ok, security_reason = await run_security_checks(
         entry["mint_address"], entry.get("deployer_wallet", ""), entry.get("pool_address", "")
     )
@@ -196,22 +146,15 @@ async def evaluate_watchlist_entry(entry: dict) -> tuple[str, str]:
 
 async def evaluate_fast_track_entry(entry: dict) -> Optional[tuple[str, str]]:
     """
-    المسار السريع: يفحص هل العملة تُظهر "انطلاقاً صاروخياً" حقيقياً الآن
-    (عبر filters/momentum.py)، وإن كان كذلك، يشغّل نفس فحوصات الأمان
-    المستخدمة في المسار العادي (GoPlus + محاكاة البيع) — بدون انتظار
-    24-72 ساعة. يرجع None إذا لم يكن هناك زخم كافٍ (يترك القرار للمسار العادي).
-
-    مهم: هذا لا يُضعف الأمان إطلاقاً — فقط يتخطى شرط "الوقت"، ويُبقي شرط
-    "الأمان" صارماً كما هو تماماً في المسار العادي.
+    المسار السريع: يفحص هل العملة تُظهر "انطلاقاً صاروخياً" حقيقياً الآن،
+    وإن كان كذلك، يشغّل نفس فحوصات الأمان — بدون انتظار 24-72 ساعة.
     """
     age_minutes = (time.time() - entry["added_at"]) / 60
     if age_minutes > FAST_TRACK.max_entry_age_minutes:
-        return None  # فاتت نافذة المسار السريع — يُترك للمسار العادي فقط
+        return None
 
     momentum_ok, momentum_reason = await check_momentum(entry["mint_address"])
     if not momentum_ok:
-        # تسجيل تشخيصي مؤقت (INFO بدل الصمت الكامل): نحتاج رؤية الأرقام
-        # الفعلية لمعايرة عتبات MOMENTUM بذكاء بدل التخمين النظري.
         logger.info(f"📊 [{entry['symbol']}] لا زخم كافٍ بعد: {momentum_reason}")
         return None
 
@@ -225,11 +168,7 @@ async def evaluate_fast_track_entry(entry: dict) -> Optional[tuple[str, str]]:
 
 
 async def _get_current_capital_sol() -> float:
-    """
-    يرجع الرصيد الفعلي القابل للاستخدام الآن (وليس رقماً ثابتاً يصبح قديماً
-    بعد أول ربح/خسارة). في وضع DEVNET، لا يوجد رصيد حقيقي فيُستخدم رقم
-    افتراضي ثابت فقط للمحاكاة.
-    """
+    """يرجع الرصيد الفعلي القابل للاستخدام الآن (وليس رقماً ثابتاً)."""
     if USE_DEVNET:
         return DEVNET_FALLBACK_CAPITAL_SOL
 
@@ -243,8 +182,8 @@ async def _get_current_capital_sol() -> float:
         return 0.0
 
 
-async def _execute_approval(entry: dict, reason: str, stage: str, db_path: str):
-    """منطق تنفيذ الشراء المشترك بين المسار العادي والمسار السريع — يمنع تكرار الكود."""
+async def _execute_approval(entry: dict, reason: str, stage: str):
+    """منطق تنفيذ الشراء المشترك بين المسار العادي والمسار السريع."""
     current_capital = await _get_current_capital_sol()
     if current_capital <= 0:
         logger.warning(
@@ -254,7 +193,7 @@ async def _execute_approval(entry: dict, reason: str, stage: str, db_path: str):
         return
 
     logger.info(f"موافقة على شراء {entry['symbol']} ({stage}): {reason}")
-    record_screening_result(
+    await record_screening_result(
         entry["mint_address"], entry["symbol"], entry.get("dex", ""),
         "added_to_watchlist", stage, reason,
     )
@@ -264,61 +203,48 @@ async def _execute_approval(entry: dict, reason: str, stage: str, db_path: str):
         capital_sol=capital_sol,
         filter_report={"decision": reason, "stage": stage},
     )
-    _update_watchlist_status(entry["id"], "approved", db_path)
+    await _update_watchlist_status(entry["id"], "approved")
 
 
-async def run_watchlist_loop(db_path: str = DB_PATH):
+async def run_watchlist_loop():
     """يراجع كل العملات في قائمة المراقبة دورياً ويتخذ قرار الشراء عند الموافقة."""
-    init_watchlist_table(db_path)
+    await init_watchlist_table()
     while True:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT * FROM watchlist WHERE status = 'watching'"
-        ).fetchall()
-        conn.close()
+        rows = await pool.fetch("SELECT * FROM watchlist WHERE status = 'watching'")
 
         for row in rows:
             entry = dict(row)
             decision, reason = await evaluate_watchlist_entry(entry)
 
             if decision == "approved":
-                await _execute_approval(entry, reason, "watchlist_final_approval", db_path)
+                await _execute_approval(entry, reason, "watchlist_final_approval")
 
             elif decision in ("rejected", "expired"):
                 logger.info(f"رفض/انتهاء {entry['symbol']}: {reason}")
-                record_screening_result(
+                await record_screening_result(
                     entry["mint_address"], entry["symbol"], entry.get("dex", ""),
                     "rejected", f"watchlist_{decision}", reason,
                 )
-                _update_watchlist_status(entry["id"], decision, db_path)
+                await _update_watchlist_status(entry["id"], decision)
 
         await asyncio.sleep(WATCHLIST.check_interval_minutes * 60)
 
 
-async def run_fast_track_loop(db_path: str = DB_PATH):
-    """
-    حلقة منفصلة تعمل بمعدل أسرع بكثير (كل 30 ثانية افتراضياً) من watchlist
-    العادي (كل 15 دقيقة)، وتفحص فقط العملات الحديثة جداً (أقل من ساعة) بحثاً
-    عن "انطلاق صاروخي" يستحق تسريع قرار الشراء. لا تُغيّر أو تُضعف أي شرط
-    أمان — فقط تتخطى شرط الانتظار الزمني عند وجود دليل قوي على الزخم الآن.
-    """
+async def run_fast_track_loop():
+    """حلقة منفصلة أسرع بكثير (كل 30 ثانية) تفحص فقط العملات الحديثة جداً."""
     if not FAST_TRACK.enabled:
         logger.info("المسار السريع (fast-track) معطّل في الإعدادات — لن يعمل")
         return
 
-    init_watchlist_table(db_path)
+    await init_watchlist_table()
     logger.info("بدء المسار السريع لرصد الانطلاق الصاروخي...")
 
     while True:
         cutoff_timestamp = time.time() - (FAST_TRACK.max_entry_age_minutes * 60)
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT * FROM watchlist WHERE status = 'watching' AND added_at >= ?",
-            (cutoff_timestamp,),
-        ).fetchall()
-        conn.close()
+        rows = await pool.fetch(
+            "SELECT * FROM watchlist WHERE status = 'watching' AND added_at >= $1",
+            cutoff_timestamp,
+        )
 
         for row in rows:
             entry = dict(row)
@@ -329,26 +255,25 @@ async def run_fast_track_loop(db_path: str = DB_PATH):
                 continue
 
             if result is None:
-                continue  # لا زخم كافٍ الآن — يُترك للمسار العادي بصمت
+                continue
 
             decision, reason = result
             if decision == "approved":
-                await _execute_approval(entry, reason, "fast_track_approval", db_path)
+                await _execute_approval(entry, reason, "fast_track_approval")
             elif decision == "rejected":
                 logger.info(f"رفض المسار السريع لـ {entry['symbol']}: {reason}")
-                record_screening_result(
+                await record_screening_result(
                     entry["mint_address"], entry["symbol"], entry.get("dex", ""),
                     "rejected", "fast_track_rejected", reason,
                 )
-                # ملاحظة: لا نُغيّر حالة الصفقة إلى rejected هنا — فشل الأمان
-                # في لحظة الزخم لا يعني بالضرورة رفضاً نهائياً؛ نترك المسار
-                # العادي يقرر مصيرها النهائي لاحقاً بعد فترة الانتظار الكاملة.
 
         await asyncio.sleep(FAST_TRACK.check_interval_seconds)
 
 
-def _update_watchlist_status(watch_id: int, status: str, db_path: str = DB_PATH):
-    conn = sqlite3.connect(db_path)
-    conn.execute("UPDATE watchlist SET status = ? WHERE id = ?", (status, watch_id))
-    conn.commit()
-    conn.close()
+async def _update_watchlist_status(watch_id: int, status: str):
+    await pool.execute("UPDATE watchlist SET status = $1 WHERE id = $2", status, watch_id)
+
+
+async def get_open_watchlist_count() -> int:
+    """يُستخدم في الفحص الصحي بعد إعادة التشغيل."""
+    return await pool.fetchval("SELECT COUNT(*) FROM watchlist WHERE status = 'watching'")
