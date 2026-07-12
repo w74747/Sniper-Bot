@@ -60,7 +60,7 @@ async def execute_buy(
         filter_report=json.dumps(filter_report, ensure_ascii=False),
         tx_hash_entry=tx_hash,
     )
-    trade_id = db.record_entry(trade)
+    trade_id = await db.record_entry(trade)
 
     filter_summary = "\n".join(f"- {k}: {v}" for k, v in filter_report.items())
     await notifier.alert_new_position_opened(symbol, mint_address, capital_sol, filter_summary)
@@ -109,10 +109,10 @@ async def _execute_sell(
                 logger.error(f"فشل تنفيذ البيع لـ {trade['symbol']}: {e}")
                 raise
 
-    profit_loss = db.record_exit(
+    profit_loss = await db.record_exit(
         trade["id"], exit_price, proceeds_sol, reason, tx_hash, flagged=flagged
     )
-    cumulative = db.get_cumulative_performance()
+    cumulative = await db.get_cumulative_performance()
     await notifier.alert_auto_closed(
         trade["symbol"], mint_address, reason,
         trade["capital_invested_sol"], proceeds_sol, profit_loss, tx_hash,
@@ -144,7 +144,7 @@ async def confirm_and_close_flagged_trade(trade_id: int, human_confirmed_reason:
     يُستدعى عندما يؤكد المستخدم يدوياً (بعد تنبيه المراجعة) أن الشبهة صحيحة.
     هذا هو مسار "تأكيد بشري ثم إغلاق آلي" الذي اتفقنا عليه.
     """
-    open_trades = db.get_open_trades()
+    open_trades = await db.get_open_trades()
     trade = next((t for t in open_trades if t["id"] == trade_id), None)
     if not trade:
         logger.error(f"لم يتم العثور على صفقة مفتوحة بالمعرف {trade_id}")
