@@ -1,21 +1,20 @@
 """
-سكربت مستقل لعرض إحصائيات الفحص من قاعدة البيانات الدائمة (وليس من اللوج).
+سكربت مستقل لعرض إحصائيات الفحص من قاعدة البيانات الدائمة (Postgres).
 
 طريقة الاستخدام على Railway:
 1. غيّر Procfile مؤقتاً إلى: worker: python print_stats.py
 2. انتظر انتهاء التشغيل، اقرأ الإحصائيات من Deploy Logs
 3. أعد Procfile إلى: worker: python main.py
-
-يمكنك أيضاً تعديل HOURS أدناه لتغيير الفترة الزمنية المطلوبة (مثلاً 6 أو 24 أو 72).
 """
+import asyncio
 from db.trades import get_screening_stats, init_db
 
-HOURS = 6  # غيّر هذا الرقم حسب الفترة التي تريد تحليلها
+HOURS = 6
 
 
-def main():
-    init_db()
-    stats = get_screening_stats(hours=HOURS)
+async def main():
+    await init_db()
+    stats = await get_screening_stats(hours=HOURS)
 
     print("=" * 60)
     print(f"إحصائيات آخر {stats['period_hours']} ساعة")
@@ -33,12 +32,12 @@ def main():
         print(f"  ({row['c']}x) {row['reason'][:100]}")
     print()
 
-    print(f"العملات المضافة لـ watchlist ({len(stats['added_to_watchlist'])}):")
-    for row in stats["added_to_watchlist"]:
+    print(f"العملات المضافة لـ watchlist ({len(stats['added_to_watchlist'])} إجمالاً، آخر 20 فقط):")
+    for row in stats["added_to_watchlist"][:20]:
         print(f"  {row['symbol']} — {row['mint_address']}")
 
     print("=" * 60)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
