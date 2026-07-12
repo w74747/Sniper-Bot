@@ -37,6 +37,10 @@ CHAINSTACK_WS_URL = os.getenv("CHAINSTACK_WS_URL", "").strip()
 PRIMARY_RPC_URL = CHAINSTACK_RPC_URL or HELIUS_RPC_URL
 PRIMARY_WS_URL = CHAINSTACK_WS_URL or HELIUS_WS_URL
 
+# قائمة تناوب لمزودي WebSocket — عند فشل أحدهم (403 منتهي الصلاحية، 429 حد
+# معدل، إلخ) نتحول تلقائياً للتالي بدل التعطل الكامل بانتظار تدخل يدوي.
+WS_ENDPOINTS = [url for url in [CHAINSTACK_WS_URL, HELIUS_WS_URL] if url]
+
 # Ankr: مصدر HTTP احتياطي إضافي (WebSocket يتطلب باقة مدفوعة، فلا نستخدمه هنا)
 ANKR_RPC_URL = os.getenv("ANKR_RPC_URL", "").strip()
 
@@ -191,6 +195,12 @@ class PostTradeMonitorSettings:
     external_check_interval_minutes: int = 60   # فحص المصادر الخارجية كل كم دقيقة
 
     # عتبات إغلاق تلقائي فوري (دليل on-chain قاطع — لا حاجة لمراجعة بشرية)
+    # ملاحظة مهمة: رُفعت من 15% إلى 25% بعد ملاحظة أن ارتفاع الضريبة/تأثير
+    # البيع خلال أول دقائق غالباً انزلاق سعري طبيعي (Price Impact) ناتج عن
+    # زيادة التداول على Bonding Curve نفسه، وليس دليل احتيال حقيقي دائماً —
+    # كان هذا يُغلق صفقات رابحة جداً (حتى +120% زخم) خلال دقائق قليلة فقط،
+    # قبل أن يُتاح لها وقت كافٍ للصعود. وقف الخسارة المتحرك (trailing stop)
+    # يبقى خط الدفاع الأساسي الأدق، القائم على السعر الفعلي وليس تقريب الضريبة.
     auto_close_on_tax_increase_above_pct: float = 25.0
     auto_close_on_lp_withdrawal: bool = True
     auto_close_on_ownership_change: bool = True
