@@ -17,6 +17,7 @@ import logging
 import os
 
 from db import trades as db
+from db.log_handler import install_database_log_handler, flush_log_queue_loop
 from monitor.post_trade_monitor import run_monitor_loop
 from monitor.watchlist import run_watchlist_loop, run_fast_track_loop
 from monitor.mempool_listener import run_mempool_listener
@@ -36,6 +37,11 @@ logging.basicConfig(
 # حماية: حتى لو رُفع المستوى العام لـ DEBUG مستقبلاً للتشخيص، لا نريد إغراق
 # السجلات بتفاصيل داخلية من مكتبة websockets نفسها (نبضات ping/pong وغيرها)
 logging.getLogger("websockets").setLevel(logging.WARNING)
+
+# تثبيت معالج قاعدة البيانات — كل سجل من الآن يُخزَّن في Postgres أيضاً،
+# قابل للاستعلام لاحقاً عبر view_logs.py بغض النظر عن حدود تصدير Railway.
+install_database_log_handler()
+
 logger = logging.getLogger("main")
 
 
@@ -48,6 +54,7 @@ async def main():
         asyncio.create_task(run_watchlist_loop()),     # مراجعة قائمة الانتظار العادية (24-72 ساعة)
         asyncio.create_task(run_fast_track_loop()),    # المسار السريع (رصد الانطلاق الصاروخي)
         asyncio.create_task(run_monitor_loop()),       # مراقبة الصفقات المفتوحة (جاهز)
+        asyncio.create_task(flush_log_queue_loop()),   # تفريغ طابور السجلات لقاعدة البيانات دورياً
     ]
     await asyncio.gather(*tasks)
 
