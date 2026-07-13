@@ -23,12 +23,17 @@ from trading.swap_client import load_wallet_keypair
 from filters.reputation import evaluate_reputation
 from filters.sell_simulation import simulate_sell, evaluate_simulation_result
 from filters.momentum import check_momentum
+from filters.tatum_check import verify_mint_authority_disabled
 from utils.solana_rpc import get_token_largest_accounts, rpc_call, get_wallet_sol_balance
 
 logger = logging.getLogger("watchlist")
 
 SOL_FEE_RESERVE = 0.01
 DEVNET_FALLBACK_CAPITAL_SOL = 1.0
+
+# بعد رفض عملة عند الفحص الأول (لم تُشترَ إطلاقاً)، لا نمنع إعادة النظر فيها
+# إلا خلال هذه المدة فقط — ظروفها (GoPlus، الزخم) قد تتغيّر خلال ساعات قليلة.
+WATCHLIST_REJECTION_COOLDOWN_HOURS = 6
 
 # لا نستدعي check_organic_growth (استعلام RPC مكلف) إلا خلال آخر عدد ساعات
 # محدد قبل انتهاء فترة الانتظار الدنيا — هذا يقلل استهلاك RPC بنسبة تفوق 90%
@@ -69,11 +74,31 @@ async def add_to_watchlist(entry: WatchlistEntry) -> int:
 
 
 async def is_already_in_watchlist(mint_address: str) -> bool:
-    """يفحص إن كانت هذه العملة موجودة مسبقاً في watchlist بأي حالة (لمنع التكرار)."""
+    """
+    يفحص إن كان يجب منع إعادة إضافة هذه العملة لـ watchlist، مع تمييز مهم:
+
+    1. "watching" أو "approved" → حظر مطلق (قيد المراقبة فعلاً أو أصبحت صفقة).
+    2. "rejected" أو "expired" (رُفضت فقط عند الفحص الأول ولم تُشترَ إطلاقاً)
+       → نسمح بإعادة النظر بعد فترة تهدئة قصيرة فقط (WATCHLIST_REJECTION_COOLDOWN_HOURS)،
+       لأن ظروف عملة meme (GoPlus، الزخم، التوزيع) قد تتغيّر جذرياً خلال ساعات
+       قليلة، وحظرها للأبد بعد أول رفض يُفوّت فرصاً حقيقية بلا داعٍ.
+    """
     row = await pool.fetchrow(
-        "SELECT 1 FROM watchlist WHERE mint_address = $1 LIMIT 1", mint_address
+        """SELECT status, added_at FROM watchlist
+           WHERE mint_address = $1
+           ORDER BY added_at DESC LIMIT 1""",
+        mint_address,
     )
-    return row is not None
+    if row is None:
+        return False
+
+    status = row["status"]
+    if status in ("watching", "approved"):
+        return True  # حظر مطلق
+
+    # rejected / expired — نسمح بعد فترة تهدئة قصيرة فقط
+    hours_since = (time.time() - row["added_at"]) / 3600
+    return hours_since < WATCHLIST_REJECTION_COOLDOWN_HOURS
 
 
 async def check_organic_growth(mint_address: str, holders_at_add: int) -> dict:
@@ -209,6 +234,19 @@ async def _execute_approval(entry: dict, reason: str, stage: str):
         )
         return
 
+    # التأكيد الأخير المستقل (Tatum) — مباشرة قبل تنفيذ الشراء الفعلي، وليس
+    # قبل ذلك بدقائق/ساعات، لضمان أن الفحص يعكس الحالة الحقيقية في نفس لحظة القرار.
+    tatum_safe, tatum_reason = await verify_mint_authority_disabled(entry["mint_address"])
+    if not tatum_safe:
+        logger.error(f"⛔ إلغاء شراء {entry['symbol']} بناءً على تحذير Tatum: {tatum_reason}")
+        await record_screening_result(
+            entry["mint_address"], entry["symbol"], entry.get("dex", ""),
+            "rejected", f"{stage}_tatum_final_check", tatum_reason,
+        )
+        await _update_watchlist_status(entry["id"], "rejected")
+        return
+    logger.info(f"🔍 [{entry['symbol']}] {tatum_reason}")
+
     logger.info(f"موافقة على شراء {entry['symbol']} ({stage}): {reason}")
     await record_screening_result(
         entry["mint_address"], entry["symbol"], entry.get("dex", ""),
@@ -218,7 +256,7 @@ async def _execute_approval(entry: dict, reason: str, stage: str):
     await execute_buy(
         entry["mint_address"], entry["symbol"], entry["pool_address"],
         capital_sol=capital_sol,
-        filter_report={"decision": reason, "stage": stage},
+        filter_report={"decision": reason, "stage": stage, "tatum_confirmation": tatum_reason},
     )
     await _update_watchlist_status(entry["id"], "approved")
 
@@ -227,22 +265,33 @@ async def run_watchlist_loop():
     """يراجع كل العملات في قائمة المراقبة دورياً ويتخذ قرار الشراء عند الموافقة."""
     await init_watchlist_table()
     while True:
-        rows = await pool.fetch("SELECT * FROM watchlist WHERE status = 'watching'")
+        try:
+            rows = await pool.fetch("SELECT * FROM watchlist WHERE status = 'watching'")
 
-        for row in rows:
-            entry = dict(row)
-            decision, reason = await evaluate_watchlist_entry(entry)
+            for row in rows:
+                entry = dict(row)
+                try:
+                    decision, reason = await evaluate_watchlist_entry(entry)
 
-            if decision == "approved":
-                await _execute_approval(entry, reason, "watchlist_final_approval")
+                    if decision == "approved":
+                        await _execute_approval(entry, reason, "watchlist_final_approval")
 
-            elif decision in ("rejected", "expired"):
-                logger.info(f"رفض/انتهاء {entry['symbol']}: {reason}")
-                await record_screening_result(
-                    entry["mint_address"], entry["symbol"], entry.get("dex", ""),
-                    "rejected", f"watchlist_{decision}", reason,
-                )
-                await _update_watchlist_status(entry["id"], decision)
+                    elif decision in ("rejected", "expired"):
+                        logger.info(f"رفض/انتهاء {entry['symbol']}: {reason}")
+                        await record_screening_result(
+                            entry["mint_address"], entry["symbol"], entry.get("dex", ""),
+                            "rejected", f"watchlist_{decision}", reason,
+                        )
+                        await _update_watchlist_status(entry["id"], decision)
+                except Exception as e:
+                    logger.error(
+                        f"⚠️ خطأ غير متوقع أثناء معالجة {entry.get('symbol', '?')} "
+                        f"في المسار العادي: {type(e).__name__}: {e}"
+                    )
+        except Exception as e:
+            # حماية خارجية إضافية: حتى فشل جلب البيانات نفسه من القاعدة لا
+            # يجب أن يُسقط الحلقة بأكملها إلى الأبد.
+            logger.error(f"⚠️ خطأ عام في حلقة المسار العادي: {type(e).__name__}: {e}")
 
         await asyncio.sleep(WATCHLIST.check_interval_minutes * 60)
 
@@ -257,32 +306,37 @@ async def run_fast_track_loop():
     logger.info("بدء المسار السريع لرصد الانطلاق الصاروخي...")
 
     while True:
-        cutoff_timestamp = time.time() - (FAST_TRACK.max_entry_age_minutes * 60)
-        rows = await pool.fetch(
-            "SELECT * FROM watchlist WHERE status = 'watching' AND added_at >= $1",
-            cutoff_timestamp,
-        )
+        try:
+            cutoff_timestamp = time.time() - (FAST_TRACK.max_entry_age_minutes * 60)
+            rows = await pool.fetch(
+                "SELECT * FROM watchlist WHERE status = 'watching' AND added_at >= $1",
+                cutoff_timestamp,
+            )
 
-        for row in rows:
-            entry = dict(row)
-            try:
-                result = await evaluate_fast_track_entry(entry)
-            except Exception as e:
-                logger.error(f"خطأ في تقييم المسار السريع لـ {entry['symbol']}: {type(e).__name__}: {e}")
-                continue
+            for row in rows:
+                entry = dict(row)
+                try:
+                    result = await evaluate_fast_track_entry(entry)
 
-            if result is None:
-                continue
+                    if result is None:
+                        continue
 
-            decision, reason = result
-            if decision == "approved":
-                await _execute_approval(entry, reason, "fast_track_approval")
-            elif decision == "rejected":
-                logger.info(f"رفض المسار السريع لـ {entry['symbol']}: {reason}")
-                await record_screening_result(
-                    entry["mint_address"], entry["symbol"], entry.get("dex", ""),
-                    "rejected", "fast_track_rejected", reason,
-                )
+                    decision, reason = result
+                    if decision == "approved":
+                        await _execute_approval(entry, reason, "fast_track_approval")
+                    elif decision == "rejected":
+                        logger.info(f"رفض المسار السريع لـ {entry['symbol']}: {reason}")
+                        await record_screening_result(
+                            entry["mint_address"], entry["symbol"], entry.get("dex", ""),
+                            "rejected", "fast_track_rejected", reason,
+                        )
+                except Exception as e:
+                    logger.error(
+                        f"⚠️ خطأ غير متوقع في المسار السريع لـ {entry.get('symbol', '?')}: "
+                        f"{type(e).__name__}: {e}"
+                    )
+        except Exception as e:
+            logger.error(f"⚠️ خطأ عام في حلقة المسار السريع: {type(e).__name__}: {e}")
 
         await asyncio.sleep(FAST_TRACK.check_interval_seconds)
 
