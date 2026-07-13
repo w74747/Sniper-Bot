@@ -13,6 +13,10 @@ from db import pool
 
 logger = logging.getLogger("db_trades")
 
+# بعد صفقة سابقة عادية (ربح/خسارة بدون أي شبهة احتيال)، لا نمنع إعادة الدخول
+# إلا خلال هذه المدة فقط — عملات meme قد تصعد على عدة موجات متكررة.
+MIN_COOLDOWN_HOURS_AFTER_NORMAL_CLOSE = 6
+
 
 async def init_db():
     """ينشئ كل الجداول (إن لم تكن موجودة) في القاعدة الأساسية والاحتياطية معاً."""
@@ -66,6 +70,14 @@ async def init_db():
             holders_at_add INTEGER DEFAULT 0,
             status TEXT DEFAULT 'watching'
         );
+        CREATE TABLE IF NOT EXISTS app_logs (
+            id SERIAL PRIMARY KEY,
+            timestamp DOUBLE PRECISION,
+            level TEXT,
+            logger_name TEXT,
+            message TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_app_logs_timestamp ON app_logs(timestamp);
     """
     # ننشئ البنية في كلا القاعدتين مباشرة (وليس عبر التبديل التلقائي)، لضمان
     # أن الاحتياطية جاهزة فعلياً بمجرد الحاجة، لا تُكتشف فارغة وقت الأزمة.
@@ -206,13 +218,64 @@ async def get_cumulative_performance() -> dict:
     }
 
 
+async def get_recent_logs(minutes: int = 60, level: str = None, limit: int = 500) -> list:
+    """
+    يرجع أحدث سجلات التطبيق مباشرة من قاعدة البيانات — بديل كامل عن الاعتماد
+    على تصدير Railway (الذي يقتصر عادة على آخر ~1000 سطر فقط، أياً كانت
+    المدة الزمنية الفعلية المطلوبة، مما تسبب في التباسات متكررة سابقاً).
+    """
+    cutoff = time.time() - (minutes * 60)
+    if level:
+        rows = await pool.fetch(
+            """SELECT timestamp, level, logger_name, message FROM app_logs
+               WHERE timestamp > $1 AND level = $2
+               ORDER BY timestamp DESC LIMIT $3""",
+            cutoff, level.upper(), limit,
+        )
+    else:
+        rows = await pool.fetch(
+            """SELECT timestamp, level, logger_name, message FROM app_logs
+               WHERE timestamp > $1
+               ORDER BY timestamp DESC LIMIT $2""",
+            cutoff, limit,
+        )
+    return [dict(r) for r in rows]
+
+
 async def get_open_trades():
     rows = await pool.fetch("SELECT * FROM trades WHERE status = 'open'")
     return [dict(r) for r in rows]
 
 
 async def has_seen_mint_before(mint_address: str) -> bool:
+    """
+    يفحص إن كان يجب منع إعادة فتح صفقة لهذه العملة، مع تمييز مهم:
+
+    1. حظر دائم مطلق: أي صفقة سابقة أُغلقت بعلامة "مُشبوهة" (closed_flagged
+       — دليل حقيقي على تلاعب/احتيال مكتشف on-chain)، أو صفقة لا تزال مفتوحة
+       حالياً (open) — لا استثناء إطلاقاً هنا.
+
+    2. سماح مشروط بعد فترة تهدئة: صفقة سابقة أُغلقت بربح أو خسارة عادية
+       (closed_profit / closed_loss، بدون أي دليل احتيال) لا تُحظر إعادة
+       دخولها إلا خلال آخر MIN_COOLDOWN_HOURS_AFTER_NORMAL_CLOSE ساعة فقط —
+       عملات meme قد تصعد على عدة موجات متكررة، وحظرها للأبد بعد أول جولة
+       (رابحة أو خاسرة) يُفوّت فرصاً حقيقية بلا سبب أمان حقيقي.
+    """
     row = await pool.fetchrow(
-        "SELECT 1 FROM trades WHERE mint_address = $1 LIMIT 1", mint_address
+        """SELECT status, exit_timestamp FROM trades
+           WHERE mint_address = $1
+           ORDER BY entry_timestamp DESC LIMIT 1""",
+        mint_address,
     )
-    return row is not None
+    if row is None:
+        return False  # لم تُشترَ هذه العملة إطلاقاً من قبل
+
+    status = row["status"]
+
+    if status == "open" or status == "closed_flagged":
+        return True  # حظر دائم مطلق — لا استثناء
+
+    # صفقة سابقة عادية (ربح/خسارة بدون شبهة) — نسمح بعد فترة تهدئة قصيرة
+    exit_timestamp = row["exit_timestamp"] or 0
+    hours_since_close = (time.time() - exit_timestamp) / 3600
+    return hours_since_close < MIN_COOLDOWN_HOURS_AFTER_NORMAL_CLOSE
