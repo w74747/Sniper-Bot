@@ -1,8 +1,5 @@
 """
 دوال مساعدة مشتركة للاستعلام من Solana RPC — تُستخدم من عدة وحدات
-(mempool_listener, reputation, post_trade_monitor) لتجنب تكرار نفس منطق الاتصال.
-
-✨ محسّن: إضافة RPC Caching لتقليل استهلاك الحصة بنسبة 80-90%
 """
 import asyncio
 import logging
@@ -16,11 +13,10 @@ from config.settings import ALCHEMY_RPC_URL, PRIMARY_RPC_URL, RPC_ENDPOINTS
 logger = logging.getLogger("solana_rpc")
 
 
-# ✨ جديد: نظام Caching لتقليل استدعاءات RPC المتطابقة
 class RPCCache:
     """نظام caching بسيط لـ RPC نتائج متكررة"""
     def __init__(self):
-        self.cache: Dict[str, tuple] = {}  # (value, expiry_time)
+        self.cache: Dict[str, tuple] = {}
         self.hits = 0
         self.misses = 0
     
@@ -62,16 +58,11 @@ class RPCCache:
         for k in expired:
             del self.cache[k]
 
-# إنشاء instance واحد مشترك
 _rpc_cache = RPCCache()
 
 
 async def rpc_call(method: str, params: list, timeout: int = 20, max_retries: int = 3, endpoint: str = None) -> dict:
-    """
-    ينفّذ استدعاء JSON-RPC عام ويرجع حقل "result" من الاستجابة.
-    يستخدم Alchemy افتراضياً، أو أي رابط بديل يُمرَّس عبر endpoint (مثل Helius).
-    يعيد المحاولة تلقائياً عند أخطاء 503/429 المؤقتة، بتأخير متزايد.
-    """
+    """ينفّذ استدعاء JSON-RPC عام ويرجع حقل result من الاستجابة."""
     target_url = endpoint or ALCHEMY_RPC_URL
     payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
     last_error = None
@@ -86,7 +77,7 @@ async def rpc_call(method: str, params: list, timeout: int = 20, max_retries: in
                             f"RPC status {resp.status} في {method} (محاولة {attempt}/{max_retries}): {text[:200]}"
                         )
                         if attempt < max_retries:
-                            await asyncio.sleep(2 * attempt)  # تأخير متزايد: 2s, 4s, 6s...
+                            await asyncio.sleep(2 * attempt)
                             continue
                         raise last_error
 
@@ -112,18 +103,7 @@ async def rpc_call(method: str, params: list, timeout: int = 20, max_retries: in
 
 
 async def get_transaction_via_helius(signature: str, max_retries: int = 8, retry_delay: float = 1.0) -> dict:
-    """
-    يجلب تفاصيل معاملة عبر Helius، مع إعادة محاولة عند رجوع النتيجة فارغة (None).
-
-    ✨ محسّن: استخدام cache — إذا طلبنا نفس التوقيع مرتين، لا نستدعي RPC ثانية
-
-    ملاحظة: بعد تجربة عدة قيم، اتضح أن الفارق الزمني بين لحظة إشعار logsSubscribe
-    ولحظة توفر تفاصيل المعاملة عبر getTransaction قد يصل لعدة ثوانٍ فعلياً، حتى
-    مع commitment=confirmed. لذلك نزيد عدد المحاولات إلى 8 بتأخير ثانية واحدة بينها
-    (حتى 8 ثوانٍ انتظار كحد أقصى)، مع تسجيل كل محاولة فاشلة لمعرفة عدد المحاولات
-    الفعلي المطلوب حتى تنجح، إن نجحت.
-    """
-    # ✨ جديد: تحقق من الـ cache أولاً
+    """يجلب تفاصيل معاملة عبر Helius، مع إعادة محاولة عند رجوع النتيجة فارغة"""
     cache_key = f"tx:{signature}"
     cached = _rpc_cache.get(cache_key)
     if cached is not None:
@@ -131,8 +111,6 @@ async def get_transaction_via_helius(signature: str, max_retries: int = 8, retry
         return cached
     
     for attempt in range(1, max_retries + 1):
-        # تناوب بين كل المزودين المتاحين (Chainstack/Helius/Ankr) بدل الاصطدام
-        # بنفس المزود المرفوض مراراً — كل محاولة تجرّب المزود التالي في الدور.
         endpoint = RPC_ENDPOINTS[(attempt - 1) % len(RPC_ENDPOINTS)] if RPC_ENDPOINTS else PRIMARY_RPC_URL
         try:
             result = await rpc_call(
@@ -143,14 +121,12 @@ async def get_transaction_via_helius(signature: str, max_retries: int = 8, retry
                     "commitment": "confirmed",
                 }],
                 endpoint=endpoint,
-                max_retries=1,  # حاسم: rpc_call لا يجب أن تُعيد المحاولة داخلياً أيضاً —
-                                # هذه الدالة نفسها هي طبقة إعادة المحاولة الوحيدة (8 محاولات)
+                max_retries=1,
             )
         except RuntimeError:
             result = None
 
         if result:
-            # ✨ جديد: احفظ في الـ cache (24 ساعة — المعاملات نهائية)
             _rpc_cache.set(cache_key, result, 86400)
             if attempt > 1:
                 logger.info(f"✅ نجح جلب {signature[:16]}... في المحاولة رقم {attempt}")
@@ -164,13 +140,7 @@ async def get_transaction_via_helius(signature: str, max_retries: int = 8, retry
 
 
 async def _rpc_call_with_retry(method: str, params_without_config: list, extra_config: dict = None, max_retries: int = 6, retry_delay: float = 0.8) -> dict:
-    """
-    غلاف عام لإعادة المحاولة عبر Helius مع commitment=confirmed، لأي استعلام
-    قد يُطلب فوراً بعد اكتشاف حساب/عملة جديدة جداً لم تُفهرَس بعد. هذا نفس
-    الحل الذي طبّقناه على get_transaction_via_helius، مُعمَّماً هنا ليشمل
-    getAccountInfo وgetTokenLargestAccounts أيضاً — فشل هذين الاستعلامين
-    بسبب نفس فارق الفهرسة كان يُسقط 100% من العملات المستخرجة حديثاً.
-    """
+    """غلاف عام لإعادة المحاولة عبر Helius مع commitment=confirmed"""
     config = {"commitment": "confirmed"}
     if extra_config:
         config.update(extra_config)
@@ -192,15 +162,13 @@ async def _rpc_call_with_retry(method: str, params_without_config: list, extra_c
         if attempt < max_retries:
             await asyncio.sleep(retry_delay)
 
-    # كل المحاولات فشلت على كل المزودين المتاحين — نرمي الخطأ الحقيقي الأخير
-    # بدل استدعاء إضافي زائد على مزود ثابت (كان هذا يُخفي السبب الحقيقي سابقاً)
     if last_error:
         raise last_error
     return None
 
 
 async def get_account_info_base64(address: str) -> str:
-    """يرجع بيانات الحساب مُرمّزة base64 (raw bytes) لعنوان معيّن، مع إعادة محاولة عبر Helius."""
+    """يرجع بيانات الحساب مُرمّزة base64"""
     result = await _rpc_call_with_retry(
         "getAccountInfo", [address], extra_config={"encoding": "base64"}
     )
@@ -210,30 +178,14 @@ async def get_account_info_base64(address: str) -> str:
 
 
 async def get_token_largest_accounts(mint_address: str, max_retries: int = 6, is_new_token: bool = True) -> list:
-    """
-    يرجع قائمة أكبر 20 حاملاً لعملة معيّنة (address + amount + decimals)،
-    مع إعادة محاولة عبر Helius لنفس سبب فارق الفهرسة.
-
-    ✨ محسّن: استخدام cache + تقليل ذكي للمحاولات
-
-    معاملات:
-        is_new_token: True = عملة جديدة (6 محاولات) | False = عملة قديمة (1 محاولة فقط)
-
-    ملاحظة كفاءة مهمة: القيمة الافتراضية (6 محاولات) مصمَّمة لعملات حديثة
-    جداً (لحظة الاكتشاف الأولى). عند إعادة فحص عملات موجودة في watchlist
-    منذ ساعات/أيام (لا تعاني من فارق فهرسة إطلاقاً)، مرّر is_new_token=False
-    لتوفير استهلاك حصة Helius بشكل كبير جداً!
-    """
-    # ✨ جديد: استخدم الـ cache أولاً — مفيد جداً للعملات في watchlist
+    """يرجع قائمة أكبر 20 حاملاً لعملة معيّنة - محسّن بـ cache + تقليل ذكي"""
     cache_key = f"token_accounts:{mint_address}"
-    cache_ttl = 600 if is_new_token else 3600  # 10 دقائق للجديدة، ساعة للقديمة
+    cache_ttl = 600 if is_new_token else 3600
     
     cached = _rpc_cache.get(cache_key)
     if cached is not None:
         return cached
     
-    # ✨ جديد: للعملات القديمة جداً (watchlist)، لا تُعيد محاولة على الإطلاق (1 فقط)
-    # هذا يوفر 80-90% من استهلاك الحصة للفحوصات الدورية!
     if not is_new_token:
         max_retries = 1
     
@@ -244,15 +196,13 @@ async def get_token_largest_accounts(mint_address: str, max_retries: int = 6, is
         return []
     
     accounts = result.get("value", [])
-    
-    # ✨ جديد: احفظ في الـ cache
     _rpc_cache.set(cache_key, accounts, cache_ttl)
     
     return accounts
 
 
 async def get_signatures_for_address(address: str, limit: int = 50) -> list:
-    """يرجع أحدث توقيعات المعاملات لعنوان معيّن (مفيد لسجل محفظة المطور)."""
+    """يرجع أحدث توقيعات المعاملات لعنوان معيّن"""
     result = await rpc_call(
         "getSignaturesForAddress", [address, {"limit": limit}]
     )
@@ -262,16 +212,7 @@ async def get_signatures_for_address(address: str, limit: int = 50) -> list:
 async def get_signatures_for_address_polling(
     address: str, limit: int = 30, until: str = None, max_retries: int = 6
 ) -> list:
-    """
-    نسخة مخصّصة للاستقصاء الدوري (Polling) بديلاً عن WebSocket — تتناوب بين
-    كل مزودي RPC_ENDPOINTS عند الفشل الحقيقي فقط.
-
-    ملاحظة حاسمة: قائمة فارغة [] هنا تعني "لا معاملات جديدة منذ آخر فحص"،
-    وهذه **نتيجة ناجحة تماماً وطبيعية جداً** (أغلب دورات الاستقصاء ستكون
-    كذلك) — وليست فشلاً يستوجب إعادة المحاولة على مزود آخر. لهذا لا نستخدم
-    _rpc_call_with_retry العامة هنا (التي تُعامل أي نتيجة فارغة كفشل)،
-    بل منطقاً مخصصاً يميّز بدقة بين "نجاح بنتيجة فارغة" و"فشل اتصال حقيقي".
-    """
+    """نسخة مخصّصة للاستقصاء الدوري (Polling)"""
     config = {"limit": limit, "commitment": "confirmed"}
     if until:
         config["until"] = until
@@ -296,11 +237,7 @@ async def get_signatures_for_address_polling(
 
 
 async def get_wallet_sol_balance(pubkey: str) -> float:
-    """
-    يرجع رصيد SOL الفعلي الحالي للمحفظة (وليس رقماً مضبوطاً يدوياً) — يُستخدم
-    لتحديد حجم كل صفقة ديناميكياً بناءً على الرصيد الحقيقي في تلك اللحظة،
-    بدل رقم ثابت يصبح قديماً بمجرد أول ربح أو خسارة.
-    """
+    """يرجع رصيد SOL الفعلي الحالي للمحفظة"""
     result = await rpc_call("getBalance", [pubkey])
     lamports = result.get("value", 0) if result else 0
     return lamports / 1_000_000_000
@@ -314,6 +251,6 @@ def get_cache_stats() -> Dict[str, Any]:
 
 
 def clear_cache():
-    """امسح الـ cache يدوياً (للاختبار أو الإعادة)"""
+    """امسح الـ cache يدوياً"""
     _rpc_cache.clear_expired()
     logger.info(f"🧹 تم تنظيف الـ cache — عدد العناصر: {len(_rpc_cache.cache)}")
