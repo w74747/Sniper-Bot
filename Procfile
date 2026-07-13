@@ -1,1 +1,1 @@
-worker: python main.py
+worker: python view_logs.py
