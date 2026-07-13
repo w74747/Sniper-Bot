@@ -105,12 +105,23 @@ async def check_organic_growth(mint_address: str, holders_at_add: int) -> dict:
     """
     يفحص المؤشرات العضوية الحالية مقابل لحظة الإضافة للـ watchlist.
 
+    ✅ محسّن: استخدام cache + تقليل ذكي للمحاولات
+
     ملاحظة تنفيذية مهمة (تقريب معروف ومقصود):
     getTokenLargestAccounts يرجع فقط أكبر 20 حاملاً كحد أقصى (قيد من Solana RPC
     نفسه، وليس قيداً منّا) — لذلك "عدد الحاملين" هنا هو تقريب وليس عدّاً دقيقاً.
     """
     try:
-        largest_accounts = await get_token_largest_accounts(mint_address, max_retries=6)
+        # ✨ جديد: تحديد ذكي — هل عملة جديدة أم قديمة؟
+        # الجديدة: أقل من ساعة من الآن (تستحق 6 محاولات بسبب تأخر الفهرسة)
+        # القديمة: أكثر من ساعة (في watchlist بالفعل، محاولة واحدة كافية)
+        age_minutes = (time.time() - holders_at_add) / 60 if holders_at_add > 0 else 1000
+        is_new = age_minutes < 60
+        
+        largest_accounts = await get_token_largest_accounts(
+            mint_address,
+            is_new_token=is_new  # ✨ توفير 83% من المحاولات للعملات القديمة!
+        )
         current_holders = sum(1 for h in largest_accounts if float(h.get("amount", 0)) > 0)
     except Exception as e:
         logger.warning(f"تعذّر فحص النمو العضوي لـ {mint_address}: {e}")
