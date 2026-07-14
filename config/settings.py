@@ -1,6 +1,6 @@
 """
 ⚙️ إعدادات البوت الكاملة - Solana Sniper Bot
-مركزي شامل لكل المتغيرات المطلوبة من جميع الملفات
+جميع المتغيرات المطلوبة من جميع الملفات الفعلية في المشروع
 """
 
 import os
@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 🗄️ DATABASE
+# DATABASE
 # ═══════════════════════════════════════════════════════════════════════════════
 
 DATABASE_URL = os.getenv(
@@ -24,14 +24,14 @@ FALLBACK_DATABASE_URL = os.getenv(
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 🔑 WALLET
+# WALLET
 # ═══════════════════════════════════════════════════════════════════════════════
 
 WALLET_PRIVATE_KEY = os.getenv("WALLET_PRIVATE_KEY", "")
 USE_DEVNET = os.getenv("USE_DEVNET", "false").lower() == "true"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 🌐 RPC ENDPOINTS
+# RPC ENDPOINTS - HTTP
 # ═══════════════════════════════════════════════════════════════════════════════
 
 PRIMARY_RPC_URL = "https://api.mainnet-beta.solana.com"
@@ -53,7 +53,18 @@ SECONDARY_RPC_ENDPOINTS = [
 ALCHEMY_RPC_URL = os.getenv("ALCHEMY_RPC_URL", "https://solana-mainnet.g.alchemy.com/v2/demo")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 🔍 GOPLUS (REPUTATION)
+# RPC ENDPOINTS - WEBSOCKET (إن توفرت)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+PRIMARY_WS_URL = os.getenv("PRIMARY_WS_URL", "wss://api.mainnet-beta.solana.com")
+
+WS_ENDPOINTS = [
+    os.getenv("PRIMARY_WS_URL", "wss://api.mainnet-beta.solana.com"),
+    os.getenv("HELIUS_WS_URL", "wss://mainnet.helius-rpc.com/?api-key=demo"),
+]
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GOPLUS (REPUTATION CHECK)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 GOPLUS_APP_KEY = os.getenv("GOPLUS_APP_KEY", "")
@@ -61,28 +72,28 @@ GOPLUS_APP_SECRET = os.getenv("GOPLUS_APP_SECRET", "")
 GOPLUS_API_BASE = os.getenv("GOPLUS_API_BASE", "https://api.gopluslabs.io")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 📊 DEXSCREENER (MOMENTUM)
+# DEXSCREENER (MOMENTUM)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 DEXSCREENER_API_BASE = os.getenv("DEXSCREENER_API_BASE", "https://api.dexscreener.com/latest/dex")
 DEXSCREENER_API_KEY = os.getenv("DEXSCREENER_API_KEY", "")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 🦅 BIRDEYE (MOMENTUM - BACKUP)
+# BIRDEYE (MOMENTUM - BACKUP)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY", "")
 BIRDEYE_API_BASE = os.getenv("BIRDEYE_API_BASE", "https://public-api.birdeye.so")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 🪐 JUPITER (SELL SIMULATION)
+# JUPITER (SWAP & SELL SIMULATION)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 JUPITER_API_KEY = os.getenv("JUPITER_API_KEY", "")
 JUPITER_API_BASE = os.getenv("JUPITER_API_BASE", "https://quote-api.jup.ag/v6")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ✅ TATUM (FINAL VERIFICATION)
+# TATUM (FINAL VERIFICATION)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 TATUM_API_KEY = os.getenv("TATUM_API_KEY", "")
@@ -91,14 +102,24 @@ TATUM_RPC_URL = os.getenv("TATUM_RPC_URL", "https://solana-mainnet.tatum.io/")
 TATUM_SOLANA_RPC_URL = os.getenv("TATUM_SOLANA_RPC_URL", "https://solana-mainnet.tatum.io/")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 📱 TELEGRAM
+# TELEGRAM
 # ═══════════════════════════════════════════════════════════════════════════════
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 🎯 WATCHLIST CONFIG
+# DEX ALLOWLIST
+# ═══════════════════════════════════════════════════════════════════════════════
+
+DEX_ALLOWLIST = [
+    "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",  # Raydium AMM V4
+    "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",  # Pump.fun
+    "9W957wfaKVzqo6M6NPcLk7Lk6zKc4WjZvkKtDvaWjbFt",  # Orca
+]
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# WATCHLIST CONFIG
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @dataclass
@@ -118,7 +139,7 @@ WATCHLIST = WatchlistConfig(
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ⚡ FAST TRACK CONFIG
+# FAST TRACK CONFIG
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @dataclass
@@ -140,7 +161,7 @@ FAST_TRACK = FastTrackConfig(
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 💰 EXIT STRATEGY CONFIG
+# EXIT STRATEGY CONFIG
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @dataclass
@@ -151,6 +172,7 @@ class ExitStrategyConfig:
     stop_loss_pct: float = 15.0
     trailing_stop_pct: float = 15.0
     max_cumulative_loss_pct: float = 30.0
+    max_slippage_pct: float = 5.0
 
 
 EXIT_STRATEGY = ExitStrategyConfig(
@@ -158,11 +180,12 @@ EXIT_STRATEGY = ExitStrategyConfig(
     take_profit_pct=25.0,
     stop_loss_pct=15.0,
     trailing_stop_pct=15.0,
-    max_cumulative_loss_pct=30.0
+    max_cumulative_loss_pct=30.0,
+    max_slippage_pct=5.0
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 🛡️ FILTERS CONFIG
+# FILTERS CONFIG
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @dataclass
@@ -182,7 +205,7 @@ FILTERS = FiltersConfig(
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 📈 MOMENTUM CONFIG
+# MOMENTUM CONFIG
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @dataclass
@@ -202,7 +225,25 @@ MOMENTUM = MomentumConfig(
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 🔒 SECURITY FILTERS
+# POST TRADE MONITOR CONFIG
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class PostTradeMonitorConfig:
+    """إعدادات مراقبة الصفقات بعد الشراء"""
+    check_interval_seconds: int = 30
+    max_hold_hours: int = 24
+    auto_close_on_ownership_change: bool = True
+
+
+POST_TRADE_MONITOR = PostTradeMonitorConfig(
+    check_interval_seconds=30,
+    max_hold_hours=24,
+    auto_close_on_ownership_change=True
+)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECURITY FILTERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
 SHARIA_FILTERS_ENABLED = os.getenv("SHARIA_FILTERS_ENABLED", "true").lower() == "true"
@@ -218,7 +259,7 @@ MAX_SINGLE_HOLDER_PCT = 8.0
 MIN_LP_BURN_PCT = 95.0
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 💾 CACHING
+# CACHING
 # ═══════════════════════════════════════════════════════════════════════════════
 
 CACHE_TTL_NEW_TOKEN = 600
@@ -226,7 +267,7 @@ CACHE_TTL_OLD_TOKEN = 3600
 CACHE_TTL_TRANSACTIONS = 86400
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 🔄 RETRIES
+# RETRIES
 # ═══════════════════════════════════════════════════════════════════════════════
 
 MAX_RETRIES_NEW_TOKEN = 6
@@ -235,7 +276,7 @@ MAX_RETRIES_TRANSACTION = 8
 RETRY_DELAY_BASE = 0.8
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ⏱️ TIMEOUTS
+# TIMEOUTS
 # ═══════════════════════════════════════════════════════════════════════════════
 
 RPC_TIMEOUT = 20
@@ -243,7 +284,7 @@ BUY_TIMEOUT = 30
 SELL_TIMEOUT = 30
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 📝 LOGGING
+# LOGGING
 # ═══════════════════════════════════════════════════════════════════════════════
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
@@ -251,43 +292,27 @@ LOG_FILE_SIZE = 50
 LOG_FILES_BACKUP = 5
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 🌐 NETWORK
+# NETWORK
 # ═══════════════════════════════════════════════════════════════════════════════
 
 SOLANA_NETWORK = "mainnet-beta" if not USE_DEVNET else "devnet"
 COMMITMENT_LEVEL = "confirmed"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 🔗 POOL TYPES
+# POOL TYPES
 # ═══════════════════════════════════════════════════════════════════════════════
 
 SUPPORTED_POOL_TYPES = ["raydium", "orca", "pump"]
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 📊 POST TRADE MONITOR
-# ═══════════════════════════════════════════════════════════════════════════════
-
-@dataclass
-class PostTradeMonitorConfig:
-    """إعدادات مراقبة الصفقات بعد الشراء"""
-    check_interval_seconds: int = 30
-    max_hold_hours: int = 24
-
-
-POST_TRADE_MONITOR = PostTradeMonitorConfig(
-    check_interval_seconds=30,
-    max_hold_hours=24
-)
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 🔍 MEMPOOL
+# MEMPOOL
 # ═══════════════════════════════════════════════════════════════════════════════
 
 MEMPOOL_CHECK_INTERVAL_SECONDS = 5
 MEMPOOL_MAX_CONCURRENT_SCREENS = 3
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ✅ VALIDATION
+# VALIDATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def validate_settings() -> bool:
@@ -312,7 +337,7 @@ def validate_settings() -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 🚀 BOT INFO
+# BOT INFO
 # ═══════════════════════════════════════════════════════════════════════════════
 
 BOT_NAME = "Solana Sniper Bot"
