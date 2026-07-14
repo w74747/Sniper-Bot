@@ -47,11 +47,17 @@ ALCHEMY_RPC_URL = os.getenv("ALCHEMY_RPC_URL", "https://solana-mainnet.g.alchemy
 # ═══════════════════════════════════════════════════════════════════════════════
 GOPLUS_APP_KEY = os.getenv("GOPLUS_APP_KEY", "")
 GOPLUS_APP_SECRET = os.getenv("GOPLUS_APP_SECRET", "")
+GOPLUS_API_BASE = os.getenv("GOPLUS_API_BASE", "https://api.gopluslabs.io")
+
 TATUM_API_KEY = os.getenv("TATUM_API_KEY", "")
+TATUM_API_BASE = os.getenv("TATUM_API_BASE", "https://api.tatum.io")
+
 JUPITER_API_KEY = os.getenv("JUPITER_API_KEY", "")
 JUPITER_API_BASE = os.getenv("JUPITER_API_BASE", "https://quote-api.jup.ag/v6")
+
 DEXSCREENER_API_KEY = os.getenv("DEXSCREENER_API_KEY", "")
 DEXSCREENER_API_BASE = os.getenv("DEXSCREENER_API_BASE", "https://api.dexscreener.com/latest/dex")
+
 BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY", "")
 BIRDEYE_API_BASE = os.getenv("BIRDEYE_API_BASE", "https://public-api.birdeye.so")
 
