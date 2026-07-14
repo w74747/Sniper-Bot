@@ -49,6 +49,7 @@ GOPLUS_APP_KEY = os.getenv("GOPLUS_APP_KEY", "")
 GOPLUS_APP_SECRET = os.getenv("GOPLUS_APP_SECRET", "")
 TATUM_API_KEY = os.getenv("TATUM_API_KEY", "")
 JUPITER_API_KEY = os.getenv("JUPITER_API_KEY", "")
+JUPITER_API_BASE = os.getenv("JUPITER_API_BASE", "https://quote-api.jup.ag/v6")
 DEXSCREENER_API_KEY = os.getenv("DEXSCREENER_API_KEY", "")
 
 # ═══════════════════════════════════════════════════════════════════════════════
