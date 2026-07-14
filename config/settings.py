@@ -51,6 +51,8 @@ GOPLUS_API_BASE = os.getenv("GOPLUS_API_BASE", "https://api.gopluslabs.io")
 
 TATUM_API_KEY = os.getenv("TATUM_API_KEY", "")
 TATUM_API_BASE = os.getenv("TATUM_API_BASE", "https://api.tatum.io")
+TATUM_RPC_URL = os.getenv("TATUM_RPC_URL", "https://solana-mainnet.tatum.io/")
+TATUM_SOLANA_RPC_URL = os.getenv("TATUM_SOLANA_RPC_URL", "https://solana-mainnet.tatum.io/")
 
 JUPITER_API_KEY = os.getenv("JUPITER_API_KEY", "")
 JUPITER_API_BASE = os.getenv("JUPITER_API_BASE", "https://quote-api.jup.ag/v6")
