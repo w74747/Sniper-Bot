@@ -42,22 +42,11 @@ PRIMARY_RPC_URL = "https://api.mainnet-beta.solana.com"
 
 # ✅ المزودات الرئيسية (الترتيب مهم - من الأفضل للأقل)
 RPC_ENDPOINTS = [
-    # 1. Solana Official (موثوق تماماً، لا حدود عملياً)
     "https://api.mainnet-beta.solana.com",
-    
-    # 2. PublicNode (موثوق جداً، مجاني، حصة عالية)
     "https://solana-rpc.publicnode.com",
-    
-    # 3. Alchemy (مجاني، 50K RU/يوم تقريباً)
     os.getenv("ALCHEMY_RPC_URL", "https://solana-mainnet.g.alchemy.com/v2/demo"),
-    
-    # 4. QuickNode (مجاني، 50M CU/شهر)
     os.getenv("QUICKNODE_RPC_URL", "https://empty-cool-moon.solana-mainnet.quiknode.pro/"),
-    
-    # 5. dRPC (مجاني، حصة عالية)
     os.getenv("DRPC_RPC_URL", "https://solana-mainnet.core.chainstack.com/"),
-    
-    # 6. Helius (قد تكون استُنزفت، احتياطي)
     os.getenv("HELIUS_RPC_URL", "https://mainnet.helius-rpc.com/"),
 ]
 
@@ -101,16 +90,9 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 @dataclass
 class WatchlistConfig:
     """إعدادات قائمة المراقبة"""
-    # المدة الدنيا قبل التقييم (ساعات)
     min_watch_hours: int = 24
-    
-    # المدة القصوى قبل الحذف (ساعات)
     max_watch_hours: int = 72
-    
-    # أقل نمو عضوي مقبول (عدد حاملين جدد)
     min_organic_holders_growth: int = 8
-    
-    # فترة فحص الـ watchlist (دقائق)
     check_interval_minutes: int = 15
 
 
@@ -128,19 +110,10 @@ WATCHLIST = WatchlistConfig(
 @dataclass
 class FastTrackConfig:
     """إعدادات المسار السريع"""
-    # هل المسار السريع مفعّل؟
     enabled: bool = True
-    
-    # عمر العملة الأقصى للمسار السريع (دقائق)
     max_entry_age_minutes: int = 60
-    
-    # فترة فحص المسار السريع (ثواني)
     check_interval_seconds: int = 30
-    
-    # الحد الأدنى للزخم المطلوب
     min_momentum_pct: float = 15.0
-    
-    # الحد الأدنى للحجم (USDC)
     min_volume_usdc: float = 2000.0
 
 
@@ -159,19 +132,10 @@ FAST_TRACK = FastTrackConfig(
 @dataclass
 class ExitStrategyConfig:
     """إعدادات الخروج من الصفقات"""
-    # نسبة رأس المال لكل صفقة (%)
     max_capital_pct_per_trade: float = 10.0
-    
-    # هدف الربح (%)
     take_profit_pct: float = 25.0
-    
-    # وقف الخسارة العادي (%)
     stop_loss_pct: float = 15.0
-    
-    # وقف الخسارة المتحرك (%)
     trailing_stop_pct: float = 15.0
-    
-    # الحد الأقصى للخسارة المجمّعة (%)
     max_cumulative_loss_pct: float = 30.0
 
 
@@ -187,7 +151,6 @@ EXIT_STRATEGY = ExitStrategyConfig(
 # 🛡️ الفلاتر والفحوصات
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# فحوصات الشريعة (الكلمات المحظورة)
 SHARIA_FILTERS_ENABLED = os.getenv("SHARIA_FILTERS_ENABLED", "true").lower() == "true"
 
 BANNED_KEYWORDS = [
@@ -195,87 +158,79 @@ BANNED_KEYWORDS = [
     "ايرب", "مفاجأة", "خصم", "ضمان", "أرباح مضمونة"
 ]
 
-# متطلبات GoPlus (الحد الأدنى للسمعة)
 MIN_GOPLUS_SCORE = 70
-
-# متطلبات التوزيع
 MAX_DEPLOYER_OWNERSHIP_PCT = 8.0
 MAX_SINGLE_HOLDER_PCT = 8.0
-
-# متطلبات حرق LP (Raydium)
 MIN_LP_BURN_PCT = 95.0
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 📊 RPC Caching - تحسين الأداء
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# مدة تخزين مؤقت العملات الجديدة (ثواني)
-CACHE_TTL_NEW_TOKEN = 600  # 10 دقائق
-
-# مدة تخزين مؤقت العملات القديمة (ثواني)
-CACHE_TTL_OLD_TOKEN = 3600  # ساعة واحدة
-
-# مدة تخزين مؤقت المعاملات (ثواني)
-CACHE_TTL_TRANSACTIONS = 86400  # 24 ساعة (المعاملات نهائية)
+CACHE_TTL_NEW_TOKEN = 600
+CACHE_TTL_OLD_TOKEN = 3600
+CACHE_TTL_TRANSACTIONS = 86400
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 🔄 معاملات إعادة المحاولة
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# محاولات RPC القصوى للعملات الجديدة
 MAX_RETRIES_NEW_TOKEN = 6
-
-# محاولات RPC القصوى للعملات القديمة
 MAX_RETRIES_OLD_TOKEN = 1
-
-# محاولات جلب المعاملات
 MAX_RETRIES_TRANSACTION = 8
-
-# تأخير إعادة المحاولة (ثواني)
 RETRY_DELAY_BASE = 0.8
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 🕐 المهلات الزمنية
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# مهلة RPC (ثواني)
 RPC_TIMEOUT = 20
-
-# مهلة الشراء الكلية (ثواني)
 BUY_TIMEOUT = 30
-
-# مهلة البيع (ثواني)
 SELL_TIMEOUT = 30
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 📝 التسجيل والمراقبة
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# مستوى السجل (DEBUG, INFO, WARNING, ERROR)
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
-
-# حجم ملف السجل (MB)
 LOG_FILE_SIZE = 50
-
-# عدد ملفات السجل المحفوظة
 LOG_FILES_BACKUP = 5
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 🌐 شبكة Solana
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Solana Network (mainnet-beta, devnet, testnet)
 SOLANA_NETWORK = "mainnet-beta" if not USE_DEVNET else "devnet"
-
-# Commitment level
 COMMITMENT_LEVEL = "confirmed"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 🔗 Pools المدعومة
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# أنواع البولات المدعومة
 SUPPORTED_POOL_TYPES = ["raydium", "orca", "pump"]
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 📊 Post Trade Monitor - مراقبة ما بعد الشراء
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class PostTradeMonitorConfig:
+    """إعدادات مراقبة الصفقات بعد الشراء"""
+    check_interval_seconds: int = 30
+    max_hold_hours: int = 24
+
+
+POST_TRADE_MONITOR = PostTradeMonitorConfig(
+    check_interval_seconds=30,
+    max_hold_hours=24
+)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 🔍 Mempool Listener
+# ═══════════════════════════════════════════════════════════════════════════════
+
+MEMPOOL_CHECK_INTERVAL_SECONDS = 5
+MEMPOOL_MAX_CONCURRENT_SCREENS = 3
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ✅ دالات مساعدة للتحقق
