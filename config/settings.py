@@ -7,40 +7,27 @@ import os
 from dataclasses import dataclass
 from dotenv import load_dotenv
 
-# تحميل متغيرات البيئة من .env
 load_dotenv()
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 🗄️ قاعدة البيانات
-# ═══════════════════════════════════════════════════════════════════════════════
-
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgresql://user:password@localhost:5432/sniper_db"
 )
 
-# قاعدة بيانات احتياطية (Neon)
 FALLBACK_DATABASE_URL = os.getenv(
     "FALLBACK_DATABASE_URL",
     "postgresql://user:password@neon.tech/sniper_db"
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 🔑 المحفظة والمفاتيح
-# ═══════════════════════════════════════════════════════════════════════════════
-
 WALLET_PRIVATE_KEY = os.getenv("WALLET_PRIVATE_KEY", "")
 
 USE_DEVNET = os.getenv("USE_DEVNET", "false").lower() == "true"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ✨ مزودات RPC - النظام الذكي الجديد
-# ═══════════════════════════════════════════════════════════════════════════════
-
-# ✅ المزود الأساسي (Solana Official - موثوق 100%)
 PRIMARY_RPC_URL = "https://api.mainnet-beta.solana.com"
 
-# ✅ المزودات الرئيسية (الترتيب مهم - من الأفضل للأقل)
 RPC_ENDPOINTS = [
     "https://api.mainnet-beta.solana.com",
     "https://solana-rpc.publicnode.com",
@@ -50,43 +37,25 @@ RPC_ENDPOINTS = [
     os.getenv("HELIUS_RPC_URL", "https://mainnet.helius-rpc.com/"),
 ]
 
-# مزودات تأكيد ثانوية (اختيارية - للتأكيد النهائي قبل الشراء)
 SECONDARY_RPC_ENDPOINTS = [
     os.getenv("HELIUS_RPC_URL", "https://mainnet.helius-rpc.com/"),
     os.getenv("TATUM_RPC_URL", "https://solana-mainnet.tatum.io/"),
 ]
 
-# ✅ المزود الافتراضي للاستخدام المباشر
 ALCHEMY_RPC_URL = os.getenv("ALCHEMY_RPC_URL", "https://solana-mainnet.g.alchemy.com/v2/demo")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 🔍 API مفاتيح الخدمات الخارجية
-# ═══════════════════════════════════════════════════════════════════════════════
-
-# GoPlus (فحص الأمان)
 GOPLUS_APP_KEY = os.getenv("GOPLUS_APP_KEY", "")
 GOPLUS_APP_SECRET = os.getenv("GOPLUS_APP_SECRET", "")
-
-# Tatum (التأكيد النهائي)
 TATUM_API_KEY = os.getenv("TATUM_API_KEY", "")
-
-# Jupiter (Swap API)
 JUPITER_API_KEY = os.getenv("JUPITER_API_KEY", "")
-
-# DexScreener (معلومات الزخم)
 DEXSCREENER_API_KEY = os.getenv("DEXSCREENER_API_KEY", "")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 📱 التنبيهات - Telegram
-# ═══════════════════════════════════════════════════════════════════════════════
-
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 🎯 معاملات Watchlist - القائمة العادية
-# ═══════════════════════════════════════════════════════════════════════════════
-
 @dataclass
 class WatchlistConfig:
     """إعدادات قائمة المراقبة"""
@@ -104,9 +73,6 @@ WATCHLIST = WatchlistConfig(
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ⚡ المسار السريع (Fast Track) - الانطلاق الصاروخي
-# ═══════════════════════════════════════════════════════════════════════════════
-
 @dataclass
 class FastTrackConfig:
     """إعدادات المسار السريع"""
@@ -126,9 +92,6 @@ FAST_TRACK = FastTrackConfig(
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 💰 إستراتيجية الخروج (Exit Strategy)
-# ═══════════════════════════════════════════════════════════════════════════════
-
 @dataclass
 class ExitStrategyConfig:
     """إعدادات الخروج من الصفقات"""
@@ -148,9 +111,6 @@ EXIT_STRATEGY = ExitStrategyConfig(
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 🛡️ الفلاتر والفحوصات
-# ═══════════════════════════════════════════════════════════════════════════════
-
 SHARIA_FILTERS_ENABLED = os.getenv("SHARIA_FILTERS_ENABLED", "true").lower() == "true"
 
 BANNED_KEYWORDS = [
@@ -164,55 +124,51 @@ MAX_SINGLE_HOLDER_PCT = 8.0
 MIN_LP_BURN_PCT = 95.0
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 📊 RPC Caching - تحسين الأداء
-# ═══════════════════════════════════════════════════════════════════════════════
+@dataclass
+class FiltersConfig:
+    """إعدادات الفلاتر المتقدمة"""
+    enabled: bool = True
+    min_liquidity_usdc: float = 1000.0
+    max_deployer_wallet_pct: float = 8.0
+    min_holders: int = 10
 
+
+FILTERS = FiltersConfig(
+    enabled=True,
+    min_liquidity_usdc=1000.0,
+    max_deployer_wallet_pct=8.0,
+    min_holders=10
+)
+
+# ═══════════════════════════════════════════════════════════════════════════════
 CACHE_TTL_NEW_TOKEN = 600
 CACHE_TTL_OLD_TOKEN = 3600
 CACHE_TTL_TRANSACTIONS = 86400
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 🔄 معاملات إعادة المحاولة
-# ═══════════════════════════════════════════════════════════════════════════════
-
 MAX_RETRIES_NEW_TOKEN = 6
 MAX_RETRIES_OLD_TOKEN = 1
 MAX_RETRIES_TRANSACTION = 8
 RETRY_DELAY_BASE = 0.8
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 🕐 المهلات الزمنية
-# ═══════════════════════════════════════════════════════════════════════════════
-
 RPC_TIMEOUT = 20
 BUY_TIMEOUT = 30
 SELL_TIMEOUT = 30
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 📝 التسجيل والمراقبة
-# ═══════════════════════════════════════════════════════════════════════════════
-
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 LOG_FILE_SIZE = 50
 LOG_FILES_BACKUP = 5
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 🌐 شبكة Solana
-# ═══════════════════════════════════════════════════════════════════════════════
-
 SOLANA_NETWORK = "mainnet-beta" if not USE_DEVNET else "devnet"
 COMMITMENT_LEVEL = "confirmed"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 🔗 Pools المدعومة
-# ═══════════════════════════════════════════════════════════════════════════════
-
 SUPPORTED_POOL_TYPES = ["raydium", "orca", "pump"]
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 📊 Post Trade Monitor - مراقبة ما بعد الشراء
-# ═══════════════════════════════════════════════════════════════════════════════
-
 @dataclass
 class PostTradeMonitorConfig:
     """إعدادات مراقبة الصفقات بعد الشراء"""
@@ -226,16 +182,10 @@ POST_TRADE_MONITOR = PostTradeMonitorConfig(
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 🔍 Mempool Listener
-# ═══════════════════════════════════════════════════════════════════════════════
-
 MEMPOOL_CHECK_INTERVAL_SECONDS = 5
 MEMPOOL_MAX_CONCURRENT_SCREENS = 3
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ✅ دالات مساعدة للتحقق
-# ═══════════════════════════════════════════════════════════════════════════════
-
 def validate_settings() -> bool:
     """التحقق من صحة الإعدادات"""
     errors = []
@@ -258,16 +208,12 @@ def validate_settings() -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 🚀 معلومات البوت
-# ═══════════════════════════════════════════════════════════════════════════════
-
 BOT_NAME = "Solana Sniper Bot"
 BOT_VERSION = "2.0.0"
 BOT_DESCRIPTION = "بوت ذكي لاكتشاف واستهداف العملات الجديدة على Solana"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# تحقق من الإعدادات عند استيراد الملف
 if __name__ == "__main__":
     print(f"\n{BOT_NAME} v{BOT_VERSION}")
     print("="*60)
