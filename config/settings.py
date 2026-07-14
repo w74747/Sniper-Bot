@@ -1,6 +1,6 @@
 """
 ⚙️ إعدادات البوت الكاملة - Solana Sniper Bot
-مركزي شامل لكل المتغيرات والتكوينات
+مركزي شامل لكل المتغيرات المطلوبة من جميع الملفات
 """
 
 import os
@@ -10,6 +10,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 🗄️ DATABASE
+# ═══════════════════════════════════════════════════════════════════════════════
+
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgresql://user:password@localhost:5432/sniper_db"
@@ -21,11 +24,16 @@ FALLBACK_DATABASE_URL = os.getenv(
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
-WALLET_PRIVATE_KEY = os.getenv("WALLET_PRIVATE_KEY", "")
+# 🔑 WALLET
+# ═══════════════════════════════════════════════════════════════════════════════
 
+WALLET_PRIVATE_KEY = os.getenv("WALLET_PRIVATE_KEY", "")
 USE_DEVNET = os.getenv("USE_DEVNET", "false").lower() == "true"
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 🌐 RPC ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
 PRIMARY_RPC_URL = "https://api.mainnet-beta.solana.com"
 
 RPC_ENDPOINTS = [
@@ -45,29 +53,54 @@ SECONDARY_RPC_ENDPOINTS = [
 ALCHEMY_RPC_URL = os.getenv("ALCHEMY_RPC_URL", "https://solana-mainnet.g.alchemy.com/v2/demo")
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 🔍 GOPLUS (REPUTATION)
+# ═══════════════════════════════════════════════════════════════════════════════
+
 GOPLUS_APP_KEY = os.getenv("GOPLUS_APP_KEY", "")
 GOPLUS_APP_SECRET = os.getenv("GOPLUS_APP_SECRET", "")
 GOPLUS_API_BASE = os.getenv("GOPLUS_API_BASE", "https://api.gopluslabs.io")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 📊 DEXSCREENER (MOMENTUM)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+DEXSCREENER_API_BASE = os.getenv("DEXSCREENER_API_BASE", "https://api.dexscreener.com/latest/dex")
+DEXSCREENER_API_KEY = os.getenv("DEXSCREENER_API_KEY", "")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 🦅 BIRDEYE (MOMENTUM - BACKUP)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY", "")
+BIRDEYE_API_BASE = os.getenv("BIRDEYE_API_BASE", "https://public-api.birdeye.so")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 🪐 JUPITER (SELL SIMULATION)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+JUPITER_API_KEY = os.getenv("JUPITER_API_KEY", "")
+JUPITER_API_BASE = os.getenv("JUPITER_API_BASE", "https://quote-api.jup.ag/v6")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ✅ TATUM (FINAL VERIFICATION)
+# ═══════════════════════════════════════════════════════════════════════════════
 
 TATUM_API_KEY = os.getenv("TATUM_API_KEY", "")
 TATUM_API_BASE = os.getenv("TATUM_API_BASE", "https://api.tatum.io")
 TATUM_RPC_URL = os.getenv("TATUM_RPC_URL", "https://solana-mainnet.tatum.io/")
 TATUM_SOLANA_RPC_URL = os.getenv("TATUM_SOLANA_RPC_URL", "https://solana-mainnet.tatum.io/")
 
-JUPITER_API_KEY = os.getenv("JUPITER_API_KEY", "")
-JUPITER_API_BASE = os.getenv("JUPITER_API_BASE", "https://quote-api.jup.ag/v6")
-
-DEXSCREENER_API_KEY = os.getenv("DEXSCREENER_API_KEY", "")
-DEXSCREENER_API_BASE = os.getenv("DEXSCREENER_API_BASE", "https://api.dexscreener.com/latest/dex")
-
-BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY", "")
-BIRDEYE_API_BASE = os.getenv("BIRDEYE_API_BASE", "https://public-api.birdeye.so")
-
 # ═══════════════════════════════════════════════════════════════════════════════
+# 📱 TELEGRAM
+# ═══════════════════════════════════════════════════════════════════════════════
+
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 🎯 WATCHLIST CONFIG
+# ═══════════════════════════════════════════════════════════════════════════════
+
 @dataclass
 class WatchlistConfig:
     """إعدادات قائمة المراقبة"""
@@ -85,6 +118,9 @@ WATCHLIST = WatchlistConfig(
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# ⚡ FAST TRACK CONFIG
+# ═══════════════════════════════════════════════════════════════════════════════
+
 @dataclass
 class FastTrackConfig:
     """إعدادات المسار السريع"""
@@ -104,6 +140,9 @@ FAST_TRACK = FastTrackConfig(
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 💰 EXIT STRATEGY CONFIG
+# ═══════════════════════════════════════════════════════════════════════════════
+
 @dataclass
 class ExitStrategyConfig:
     """إعدادات الخروج من الصفقات"""
@@ -123,22 +162,12 @@ EXIT_STRATEGY = ExitStrategyConfig(
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
-SHARIA_FILTERS_ENABLED = os.getenv("SHARIA_FILTERS_ENABLED", "true").lower() == "true"
-
-BANNED_KEYWORDS = [
-    "rug", "scam", "hack", "steal", "exit", "dump",
-    "ايرب", "مفاجأة", "خصم", "ضمان", "أرباح مضمونة"
-]
-
-MIN_GOPLUS_SCORE = 70
-MAX_DEPLOYER_OWNERSHIP_PCT = 8.0
-MAX_SINGLE_HOLDER_PCT = 8.0
-MIN_LP_BURN_PCT = 95.0
-
+# 🛡️ FILTERS CONFIG
 # ═══════════════════════════════════════════════════════════════════════════════
+
 @dataclass
 class FiltersConfig:
-    """إعدادات الفلاتر المتقدمة"""
+    """إعدادات الفلاتر"""
     enabled: bool = True
     min_liquidity_usdc: float = 1000.0
     max_deployer_wallet_pct: float = 8.0
@@ -153,6 +182,9 @@ FILTERS = FiltersConfig(
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 📈 MOMENTUM CONFIG
+# ═══════════════════════════════════════════════════════════════════════════════
+
 @dataclass
 class MomentumConfig:
     """إعدادات فحص الزخم"""
@@ -170,34 +202,71 @@ MOMENTUM = MomentumConfig(
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 🔒 SECURITY FILTERS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+SHARIA_FILTERS_ENABLED = os.getenv("SHARIA_FILTERS_ENABLED", "true").lower() == "true"
+
+BANNED_KEYWORDS = [
+    "rug", "scam", "hack", "steal", "exit", "dump",
+    "ايرب", "مفاجأة", "خصم", "ضمان", "أرباح مضمونة"
+]
+
+MIN_GOPLUS_SCORE = 70
+MAX_DEPLOYER_OWNERSHIP_PCT = 8.0
+MAX_SINGLE_HOLDER_PCT = 8.0
+MIN_LP_BURN_PCT = 95.0
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 💾 CACHING
+# ═══════════════════════════════════════════════════════════════════════════════
+
 CACHE_TTL_NEW_TOKEN = 600
 CACHE_TTL_OLD_TOKEN = 3600
 CACHE_TTL_TRANSACTIONS = 86400
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 🔄 RETRIES
+# ═══════════════════════════════════════════════════════════════════════════════
+
 MAX_RETRIES_NEW_TOKEN = 6
 MAX_RETRIES_OLD_TOKEN = 1
 MAX_RETRIES_TRANSACTION = 8
 RETRY_DELAY_BASE = 0.8
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# ⏱️ TIMEOUTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
 RPC_TIMEOUT = 20
 BUY_TIMEOUT = 30
 SELL_TIMEOUT = 30
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 📝 LOGGING
+# ═══════════════════════════════════════════════════════════════════════════════
+
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 LOG_FILE_SIZE = 50
 LOG_FILES_BACKUP = 5
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 🌐 NETWORK
+# ═══════════════════════════════════════════════════════════════════════════════
+
 SOLANA_NETWORK = "mainnet-beta" if not USE_DEVNET else "devnet"
 COMMITMENT_LEVEL = "confirmed"
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 🔗 POOL TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
 SUPPORTED_POOL_TYPES = ["raydium", "orca", "pump"]
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 📊 POST TRADE MONITOR
+# ═══════════════════════════════════════════════════════════════════════════════
+
 @dataclass
 class PostTradeMonitorConfig:
     """إعدادات مراقبة الصفقات بعد الشراء"""
@@ -211,10 +280,16 @@ POST_TRADE_MONITOR = PostTradeMonitorConfig(
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 🔍 MEMPOOL
+# ═══════════════════════════════════════════════════════════════════════════════
+
 MEMPOOL_CHECK_INTERVAL_SECONDS = 5
 MEMPOOL_MAX_CONCURRENT_SCREENS = 3
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# ✅ VALIDATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def validate_settings() -> bool:
     """التحقق من صحة الإعدادات"""
     errors = []
@@ -223,7 +298,7 @@ def validate_settings() -> bool:
         errors.append("❌ WALLET_PRIVATE_KEY غير محدد!")
     
     if not TELEGRAM_BOT_TOKEN:
-        errors.append("⚠️ TELEGRAM_BOT_TOKEN غير محدد (التنبيهات معطّلة)")
+        errors.append("⚠️ TELEGRAM_BOT_TOKEN غير محدد")
     
     if not RPC_ENDPOINTS:
         errors.append("❌ لا توجد مزودات RPC!")
@@ -237,6 +312,9 @@ def validate_settings() -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 🚀 BOT INFO
+# ═══════════════════════════════════════════════════════════════════════════════
+
 BOT_NAME = "Solana Sniper Bot"
 BOT_VERSION = "2.0.0"
 BOT_DESCRIPTION = "بوت ذكي لاكتشاف واستهداف العملات الجديدة على Solana"
@@ -247,8 +325,8 @@ if __name__ == "__main__":
     print(f"\n{BOT_NAME} v{BOT_VERSION}")
     print("="*60)
     validate_settings()
-    print(f"\n📊 عدد مزودات RPC المتاحة: {len(RPC_ENDPOINTS)}")
+    print(f"\n📊 عدد مزودات RPC: {len(RPC_ENDPOINTS)}")
     print(f"🌐 الشبكة: {SOLANA_NETWORK}")
-    print(f"💰 رأس المال لكل صفقة: {EXIT_STRATEGY.max_capital_pct_per_trade}%")
+    print(f"💰 رأس المال/صفقة: {EXIT_STRATEGY.max_capital_pct_per_trade}%")
     print(f"🎯 هدف الربح: {EXIT_STRATEGY.take_profit_pct}%")
     print(f"⏱️ وقف الخسارة: {EXIT_STRATEGY.stop_loss_pct}%")
