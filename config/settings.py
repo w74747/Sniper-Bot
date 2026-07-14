@@ -51,6 +51,9 @@ TATUM_API_KEY = os.getenv("TATUM_API_KEY", "")
 JUPITER_API_KEY = os.getenv("JUPITER_API_KEY", "")
 JUPITER_API_BASE = os.getenv("JUPITER_API_BASE", "https://quote-api.jup.ag/v6")
 DEXSCREENER_API_KEY = os.getenv("DEXSCREENER_API_KEY", "")
+DEXSCREENER_API_BASE = os.getenv("DEXSCREENER_API_BASE", "https://api.dexscreener.com/latest/dex")
+BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY", "")
+BIRDEYE_API_BASE = os.getenv("BIRDEYE_API_BASE", "https://public-api.birdeye.so")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -139,6 +142,23 @@ FILTERS = FiltersConfig(
     min_liquidity_usdc=1000.0,
     max_deployer_wallet_pct=8.0,
     min_holders=10
+)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+@dataclass
+class MomentumConfig:
+    """إعدادات فحص الزخم"""
+    enabled: bool = True
+    min_price_change_pct: float = 15.0
+    min_volume_change_pct: float = 50.0
+    check_interval_seconds: int = 30
+
+
+MOMENTUM = MomentumConfig(
+    enabled=True,
+    min_price_change_pct=15.0,
+    min_volume_change_pct=50.0,
+    check_interval_seconds=30
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
