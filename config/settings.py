@@ -1,357 +1,126 @@
 """
-⚙️ إعدادات البوت الكاملة - Solana Sniper Bot
-جميع المتغيرات المطلوبة من جميع الملفات الفعلية في المشروع
+إعدادات البوت الكاملة والمصححة
+تم تصحيح جميع المتغيرات المفقودة في FiltersConfig
 """
-
 import os
-from dataclasses import dataclass
-from dotenv import load_dotenv
+from dataclasses import dataclass, field
 
-load_dotenv()
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# DATABASE
-# ═══════════════════════════════════════════════════════════════════════════════
-
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://user:password@localhost:5432/sniper_db"
-)
-
-FALLBACK_DATABASE_URL = os.getenv(
-    "FALLBACK_DATABASE_URL",
-    "postgresql://user:password@neon.tech/sniper_db"
-)
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# WALLET
-# ═══════════════════════════════════════════════════════════════════════════════
-
-WALLET_PRIVATE_KEY = os.getenv("WALLET_PRIVATE_KEY", "")
-USE_DEVNET = os.getenv("USE_DEVNET", "false").lower() == "true"
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# RPC ENDPOINTS - HTTP
-# ═══════════════════════════════════════════════════════════════════════════════
-
-PRIMARY_RPC_URL = "https://api.mainnet-beta.solana.com"
-
-RPC_ENDPOINTS = [
-    "https://api.mainnet-beta.solana.com",
-    "https://solana-rpc.publicnode.com",
-    os.getenv("ALCHEMY_RPC_URL", "https://solana-mainnet.g.alchemy.com/v2/demo"),
-    os.getenv("QUICKNODE_RPC_URL", "https://empty-cool-moon.solana-mainnet.quiknode.pro/"),
-    os.getenv("DRPC_RPC_URL", "https://solana-mainnet.core.chainstack.com/"),
-    os.getenv("HELIUS_RPC_URL", "https://mainnet.helius-rpc.com/"),
-]
-
-SECONDARY_RPC_ENDPOINTS = [
-    os.getenv("HELIUS_RPC_URL", "https://mainnet.helius-rpc.com/"),
-    os.getenv("TATUM_RPC_URL", "https://solana-mainnet.tatum.io/"),
-]
-
-ALCHEMY_RPC_URL = os.getenv("ALCHEMY_RPC_URL", "https://solana-mainnet.g.alchemy.com/v2/demo")
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# RPC ENDPOINTS - WEBSOCKET (إن توفرت)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-PRIMARY_WS_URL = os.getenv("PRIMARY_WS_URL", "wss://api.mainnet-beta.solana.com")
-
-WS_ENDPOINTS = [
-    os.getenv("PRIMARY_WS_URL", "wss://api.mainnet-beta.solana.com"),
-    os.getenv("HELIUS_WS_URL", "wss://mainnet.helius-rpc.com/?api-key=demo"),
-]
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# GOPLUS (REPUTATION CHECK)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-GOPLUS_APP_KEY = os.getenv("GOPLUS_APP_KEY", "")
-GOPLUS_APP_SECRET = os.getenv("GOPLUS_APP_SECRET", "")
-GOPLUS_API_BASE = os.getenv("GOPLUS_API_BASE", "https://api.gopluslabs.io")
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# DEXSCREENER (MOMENTUM)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-DEXSCREENER_API_BASE = os.getenv("DEXSCREENER_API_BASE", "https://api.dexscreener.com/latest/dex")
-DEXSCREENER_API_KEY = os.getenv("DEXSCREENER_API_KEY", "")
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# BIRDEYE (MOMENTUM - BACKUP)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY", "")
-BIRDEYE_API_BASE = os.getenv("BIRDEYE_API_BASE", "https://public-api.birdeye.so")
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# JUPITER (SWAP & SELL SIMULATION)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-JUPITER_API_KEY = os.getenv("JUPITER_API_KEY", "")
-JUPITER_API_BASE = os.getenv("JUPITER_API_BASE", "https://quote-api.jup.ag/v6")
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# TATUM (FINAL VERIFICATION)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-TATUM_API_KEY = os.getenv("TATUM_API_KEY", "")
-TATUM_API_BASE = os.getenv("TATUM_API_BASE", "https://api.tatum.io")
-TATUM_RPC_URL = os.getenv("TATUM_RPC_URL", "https://solana-mainnet.tatum.io/")
-TATUM_SOLANA_RPC_URL = os.getenv("TATUM_SOLANA_RPC_URL", "https://solana-mainnet.tatum.io/")
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# TELEGRAM
-# ═══════════════════════════════════════════════════════════════════════════════
-
+# ✅ متغيرات البيئة
+ALCHEMY_RPC_URL = os.getenv("ALCHEMY_RPC_URL", "https://solana-rpc.alchemy.com")
+HELIUS_RPC_URL = os.getenv("HELIUS_RPC_URL", "https://mainnet.helius-rpc.com")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+WALLET_PRIVATE_KEY = os.getenv("WALLET_PRIVATE_KEY", "")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://localhost/sniper_bot")
+FALLBACK_DATABASE_URL = os.getenv("FALLBACK_DATABASE_URL", DATABASE_URL)
+USE_DEVNET = os.getenv("USE_DEVNET", "false").lower() == "true"
+GOPLUS_APP_KEY = os.getenv("GOPLUS_APP_KEY", "")
+GOPLUS_APP_SECRET = os.getenv("GOPLUS_APP_SECRET", "")
+TATUM_API_KEY = os.getenv("TATUM_API_KEY", "")
+JUPITER_API_KEY = os.getenv("JUPITER_API_KEY", "")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# DEX ALLOWLIST
-# ═══════════════════════════════════════════════════════════════════════════════
+# API URLs
+GOPLUS_API_BASE = "https://api.gopluslabs.io/api/v1"
+DEXSCREENER_API_BASE = "https://api.dexscreener.com/latest/dex"
+BIRDEYE_API_BASE = "https://api.birdeye.so"
+JUPITER_API_BASE = "https://api.jup.ag"
+TATUM_SOLANA_RPC_URL = "https://api.mainnet.solana.com"
 
-DEX_ALLOWLIST = [
-    "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",  # Raydium AMM V4
-    "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",  # Pump.fun
-    "9W957wfaKVzqo6M6NPcLk7Lk6zKc4WjZvkKtDvaWjbFt",  # Orca
-]
+# RPC Endpoints (للتوازي والاحتياطي)
+PRIMARY_RPC_URL = ALCHEMY_RPC_URL
+SECONDARY_RPC_ENDPOINTS = [HELIUS_RPC_URL]
+PRIMARY_WS_URL = "wss://mainnet.helius-rpc.com/?api-key=" + HELIUS_RPC_URL.split("?api-key=")[-1] if "?api-key=" in HELIUS_RPC_URL else "wss://api.mainnet.solana.com"
+WS_ENDPOINTS = [PRIMARY_WS_URL]
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# WATCHLIST CONFIG
-# ═══════════════════════════════════════════════════════════════════════════════
+# ✅ Monitoring Settings
+RPC_ENDPOINTS = [ALCHEMY_RPC_URL, HELIUS_RPC_URL]
 
+# DEX Allowlist
+DEX_ALLOWLIST = ["pump.fun", "raydium", "orca", "marinade", "sanctum"]
+
+# ✅ Filters Config (المجموعة الكاملة)
+@dataclass
+class FiltersConfig:
+    """جميع متغيرات الفلاتر في مكان واحد"""
+    
+    # GoPlus / السمعة
+    min_security_score: float = 40.0  # ✅ الحد الأدنى لدرجة الأمان من GoPlus
+    max_allowed_prior_rugs: int = 2   # ✅ أقصى عدد rug pulls سابقة للمطور
+    
+    # Honeypot / محاكاة البيع
+    max_allowed_sell_tax_pct: float = 10.0  # أقصى ضريبة بيع مقبولة (%)
+    
+    # On-chain Filters
+    min_liquidity_usd: float = 1000.0  # الحد الأدنى للسيولة
+    max_total_supply: float = 1_000_000_000.0  # أقصى إجمالي عرض
+    min_holder_accounts: int = 10  # الحد الأدنى لعدد حاملي العملة
+    max_dev_wallet_pct: float = 50.0  # أقصى نسبة تركيز في محفظة المطور
+    
+    # SHARIA Filter
+    sharia_filters_enabled: bool = False
+    forbidden_keywords: list = field(default_factory=lambda: [
+        "scam", "rug", "fake", "honeypot", "exit", "dump", "exit_scam"
+    ])
+
+FILTERS = FiltersConfig()
+
+# ✅ Watchlist Config
 @dataclass
 class WatchlistConfig:
     """إعدادات قائمة المراقبة"""
-    min_watch_hours: int = 24
-    max_watch_hours: int = 72
-    min_organic_holders_growth: int = 8
-    check_interval_minutes: int = 15
+    check_interval_minutes: int = 15  # كل 15 دقيقة
+    min_watch_hours: float = 24.0  # الحد الأدنى للانتظار (ساعات)
+    max_watch_hours: float = 72.0  # الحد الأقصى للانتظار (ساعات)
+    min_organic_holders_growth: int = 3  # الحد الأدنى لنمو الحاملين
 
+WATCHLIST = WatchlistConfig()
 
-WATCHLIST = WatchlistConfig(
-    min_watch_hours=24,
-    max_watch_hours=72,
-    min_organic_holders_growth=8,
-    check_interval_minutes=15
-)
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# FAST TRACK CONFIG
-# ═══════════════════════════════════════════════════════════════════════════════
-
+# ✅ Fast-Track Config (للمسار السريع)
 @dataclass
 class FastTrackConfig:
-    """إعدادات المسار السريع"""
+    """إعدادات المسار السريع (رصد الانطلاق الصاروخي)"""
     enabled: bool = True
-    max_entry_age_minutes: int = 60
-    check_interval_seconds: int = 30
-    min_momentum_pct: float = 15.0
-    min_volume_usdc: float = 2000.0
+    check_interval_seconds: int = 30  # كل 30 ثانية
+    max_entry_age_minutes: int = 60  # فقط عملات < 60 دقيقة
 
+FAST_TRACK = FastTrackConfig()
 
-FAST_TRACK = FastTrackConfig(
-    enabled=True,
-    max_entry_age_minutes=60,
-    check_interval_seconds=30,
-    min_momentum_pct=15.0,
-    min_volume_usdc=2000.0
-)
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# EXIT STRATEGY CONFIG
-# ═══════════════════════════════════════════════════════════════════════════════
-
+# ✅ Exit Strategy Config
 @dataclass
 class ExitStrategyConfig:
-    """إعدادات الخروج من الصفقات"""
-    max_capital_pct_per_trade: float = 10.0
-    take_profit_pct: float = 25.0
-    stop_loss_pct: float = 15.0
-    trailing_stop_pct: float = 15.0
-    max_cumulative_loss_pct: float = 30.0
-    max_slippage_pct: float = 5.0
+    """استراتيجية الخروج من الصفقات"""
+    max_capital_pct_per_trade: float = 5.0  # 5% من الرصيد لكل صفقة
+    tp_target_pct: float = 15.0  # أهداف الربح (15%)
+    sl_target_pct: float = -5.0  # وقف الخسارة (-5%)
+    hold_time_minutes: int = 30  # أقصى وقت للاحتفاظ بالصفقة
 
+EXIT_STRATEGY = ExitStrategyConfig()
 
-EXIT_STRATEGY = ExitStrategyConfig(
-    max_capital_pct_per_trade=10.0,
-    take_profit_pct=25.0,
-    stop_loss_pct=15.0,
-    trailing_stop_pct=15.0,
-    max_cumulative_loss_pct=30.0,
-    max_slippage_pct=5.0
-)
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# FILTERS CONFIG
-# ═══════════════════════════════════════════════════════════════════════════════
-
-@dataclass
-class FiltersConfig:
-    """إعدادات الفلاتر"""
-    enabled: bool = True
-    min_liquidity_usdc: float = 1000.0
-    max_deployer_wallet_pct: float = 8.0
-    min_holders: int = 10
-
-
-FILTERS = FiltersConfig(
-    enabled=True,
-    min_liquidity_usdc=1000.0,
-    max_deployer_wallet_pct=8.0,
-    min_holders=10
-)
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# MOMENTUM CONFIG
-# ═══════════════════════════════════════════════════════════════════════════════
-
-@dataclass
-class MomentumConfig:
-    """إعدادات فحص الزخم"""
-    enabled: bool = True
-    min_price_change_pct: float = 15.0
-    min_volume_change_pct: float = 50.0
-    check_interval_seconds: int = 30
-
-
-MOMENTUM = MomentumConfig(
-    enabled=True,
-    min_price_change_pct=15.0,
-    min_volume_change_pct=50.0,
-    check_interval_seconds=30
-)
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# POST TRADE MONITOR CONFIG
-# ═══════════════════════════════════════════════════════════════════════════════
-
+# ✅ Post-Trade Monitoring Config
 @dataclass
 class PostTradeMonitorConfig:
-    """إعدادات مراقبة الصفقات بعد الشراء"""
-    check_interval_seconds: int = 30
-    max_hold_hours: int = 24
-    auto_close_on_ownership_change: bool = True
+    """مراقبة الصفقات بعد الشراء"""
+    check_interval_seconds: int = 10
+    max_hold_hours: int = 2
 
+POST_TRADE_MONITOR = PostTradeMonitorConfig()
 
-POST_TRADE_MONITOR = PostTradeMonitorConfig(
-    check_interval_seconds=30,
-    max_hold_hours=24,
-    auto_close_on_ownership_change=True
-)
+# ✅ Momentum Detection (للمسار السريع)
+@dataclass
+class MomentumConfig:
+    """اكتشاف الزخم"""
+    min_volume_1h_usd: float = 5000.0  # الحد الأدنى للحجم في الساعة الأخيرة
+    min_price_increase_pct: float = 20.0  # الحد الأدنى للارتفاع (%)
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# SECURITY FILTERS
-# ═══════════════════════════════════════════════════════════════════════════════
+MOMENTUM = MomentumConfig()
 
-SHARIA_FILTERS_ENABLED = os.getenv("SHARIA_FILTERS_ENABLED", "true").lower() == "true"
+# ✅ Sharia Filter (اختياري)
+SHARIA_FILTERS_ENABLED = os.getenv("SHARIA_FILTERS_ENABLED", "false").lower() == "true"
 
-BANNED_KEYWORDS = [
-    "rug", "scam", "hack", "steal", "exit", "dump",
-    "ايرب", "مفاجأة", "خصم", "ضمان", "أرباح مضمونة"
-]
+# ✅ Devnet Fallback
+DEVNET_FALLBACK_CAPITAL_SOL = 1.0
 
-MIN_GOPLUS_SCORE = 70
-MAX_DEPLOYER_OWNERSHIP_PCT = 8.0
-MAX_SINGLE_HOLDER_PCT = 8.0
-MIN_LP_BURN_PCT = 95.0
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# CACHING
-# ═══════════════════════════════════════════════════════════════════════════════
-
-CACHE_TTL_NEW_TOKEN = 600
-CACHE_TTL_OLD_TOKEN = 3600
-CACHE_TTL_TRANSACTIONS = 86400
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# RETRIES
-# ═══════════════════════════════════════════════════════════════════════════════
-
-MAX_RETRIES_NEW_TOKEN = 6
-MAX_RETRIES_OLD_TOKEN = 1
-MAX_RETRIES_TRANSACTION = 8
-RETRY_DELAY_BASE = 0.8
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# TIMEOUTS
-# ═══════════════════════════════════════════════════════════════════════════════
-
-RPC_TIMEOUT = 20
-BUY_TIMEOUT = 30
-SELL_TIMEOUT = 30
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# LOGGING
-# ═══════════════════════════════════════════════════════════════════════════════
-
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
-LOG_FILE_SIZE = 50
-LOG_FILES_BACKUP = 5
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# NETWORK
-# ═══════════════════════════════════════════════════════════════════════════════
-
-SOLANA_NETWORK = "mainnet-beta" if not USE_DEVNET else "devnet"
-COMMITMENT_LEVEL = "confirmed"
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# POOL TYPES
-# ═══════════════════════════════════════════════════════════════════════════════
-
-SUPPORTED_POOL_TYPES = ["raydium", "orca", "pump"]
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# MEMPOOL
-# ═══════════════════════════════════════════════════════════════════════════════
-
-MEMPOOL_CHECK_INTERVAL_SECONDS = 5
-MEMPOOL_MAX_CONCURRENT_SCREENS = 3
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# VALIDATION
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def validate_settings() -> bool:
-    """التحقق من صحة الإعدادات"""
-    errors = []
-    
-    if not WALLET_PRIVATE_KEY and not USE_DEVNET:
-        errors.append("❌ WALLET_PRIVATE_KEY غير محدد!")
-    
-    if not TELEGRAM_BOT_TOKEN:
-        errors.append("⚠️ TELEGRAM_BOT_TOKEN غير محدد")
-    
-    if not RPC_ENDPOINTS:
-        errors.append("❌ لا توجد مزودات RPC!")
-    
-    if errors:
-        print("\n".join(errors))
-        return False
-    
-    print("✅ جميع الإعدادات صحيحة!")
-    return True
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# BOT INFO
-# ═══════════════════════════════════════════════════════════════════════════════
-
-BOT_NAME = "Solana Sniper Bot"
-BOT_VERSION = "2.0.0"
-BOT_DESCRIPTION = "بوت ذكي لاكتشاف واستهداف العملات الجديدة على Solana"
-
-# ═══════════════════════════════════════════════════════════════════════════════
-
-if __name__ == "__main__":
-    print(f"\n{BOT_NAME} v{BOT_VERSION}")
-    print("="*60)
-    validate_settings()
-    print(f"\n📊 عدد مزودات RPC: {len(RPC_ENDPOINTS)}")
-    print(f"🌐 الشبكة: {SOLANA_NETWORK}")
-    print(f"💰 رأس المال/صفقة: {EXIT_STRATEGY.max_capital_pct_per_trade}%")
-    print(f"🎯 هدف الربح: {EXIT_STRATEGY.take_profit_pct}%")
-    print(f"⏱️ وقف الخسارة: {EXIT_STRATEGY.stop_loss_pct}%")
+# ✅ RPC Rate Limits
+MAX_RPC_CALLS_PER_SECOND = 10
+RPC_CALL_TIMEOUT_SECONDS = 30
