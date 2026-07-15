@@ -252,6 +252,24 @@ async def get_signatures_for_address_polling(
             )
             return result if result is not None else []
         except RuntimeError as e:
+            error_text = str(e)
+            # حالة معروفة ومتوقعة: نتناوب بين مزودين قد يختلف تقدّم فهرستهما،
+            # فقد يرفض مزود معيّن "until" مسجَّلاً من مزود آخر لم يفهرسه بعد
+            # (كود -32020 "Transaction not found"). الحل: إعادة محاولة على
+            # نفس المزود، لكن بدون "until" هذه المرة (نجلب أحدث التوقيعات
+            # مباشرة بدل الاعتماد على نقطة مرجعية قد لا يعرفها هذا المزود) —
+            # ذاكرة منع التكرار في mempool_listener تحمينا من أي إعادة معالجة.
+            if "-32020" in error_text and "until" in config:
+                fallback_config = {k: v for k, v in config.items() if k != "until"}
+                try:
+                    result = await rpc_call(
+                        "getSignaturesForAddress", [address, fallback_config],
+                        endpoint=endpoint, max_retries=1,
+                    )
+                    return result if result is not None else []
+                except RuntimeError as e2:
+                    last_error = e2
+                    continue
             last_error = e
             continue
 
