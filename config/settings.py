@@ -14,7 +14,7 @@ GOPLUS_APP_SECRET = os.getenv("GOPLUS_APP_SECRET", "")
 TATUM_API_KEY = os.getenv("TATUM_API_KEY", "")
 JUPITER_API_KEY = os.getenv("JUPITER_API_KEY", "")
 BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY", "")
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG")
 
 GOPLUS_API_BASE = "https://api.gopluslabs.io/api/v1"
 DEXSCREENER_API_BASE = "https://api.dexscreener.com/latest/dex"
@@ -30,28 +30,28 @@ DEX_ALLOWLIST = ["pump.fun", "raydium", "orca", "marinade", "sanctum"]
 
 @dataclass
 class FiltersConfig:
-    min_security_score: float = 40.0
+    min_security_score: float = 30.0
     max_allowed_prior_rugs: int = 2
     max_dev_wallet_pct: float = 50.0
     max_single_holder_pct: float = 30.0
     min_lp_burned_or_locked_pct: float = 0.0
-    require_fixed_supply: bool = True
+    require_fixed_supply: bool = False
     require_burn_or_lock: bool = False
     require_standard_token_program: bool = True
     forbid_transfer_restrictions: bool = True
     forbid_referral_mechanics: bool = True
     forbidden_keywords: list = field(default_factory=lambda: [
-        "scam", "rug", "fake", "honeypot", "exit", "dump"
+        "scam", "rug", "fake", "honeypot"
     ])
 
 FILTERS = FiltersConfig()
 
 @dataclass
 class WatchlistConfig:
-    check_interval_minutes: int = 15
-    min_watch_hours: float = 24.0
-    max_watch_hours: float = 72.0
-    min_organic_holders_growth: int = 3
+    check_interval_minutes: int = 1
+    min_watch_hours: float = 0.5
+    max_watch_hours: float = 24.0
+    min_organic_holders_growth: int = 1
 
 WATCHLIST = WatchlistConfig()
 
@@ -85,11 +85,11 @@ POST_TRADE_MONITOR = PostTradeMonitorConfig()
 
 @dataclass
 class MomentumConfig:
-    min_volume_m5_usd: float = 5000.0
-    min_price_change_m5_pct: float = 20.0
-    min_liquidity_usd: float = 1000.0
-    min_unique_buys_m5: int = 5
-    min_buy_sell_ratio_m5: float = 0.5
+    min_volume_m5_usd: float = 1000.0
+    min_price_change_m5_pct: float = 10.0
+    min_liquidity_usd: float = 500.0
+    min_unique_buys_m5: int = 1
+    min_buy_sell_ratio_m5: float = 0.3
 
 MOMENTUM = MomentumConfig()
 
