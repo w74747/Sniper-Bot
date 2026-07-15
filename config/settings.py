@@ -8,8 +8,16 @@ from typing import List
 
 # ── مفاتيح API (تُقرأ من متغيرات البيئة .env — لا تضع مفاتيح حقيقية هنا مباشرة) ──
 # Alchemy: بديل مجاني بفريتير أسخى من Helius (30 مليون Compute Unit شهرياً مجاناً)
-ALCHEMY_API_KEY = os.getenv("ALCHEMY_API_KEY", "")
-ALCHEMY_RPC_URL = f"https://solana-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}"
+# Alchemy: بديل مجاني بفريتير أسخى (30 مليون Compute Unit شهرياً مجاناً).
+# لا يدعم WebSocket Subscriptions لـ Solana (مؤكد رسمياً)، لكنه ممتاز
+# كمصدر HTTP إضافي في التناوب — كان مُهملاً سابقاً رغم توفره فعلياً.
+#
+# مرونة مقصودة: إن وُضع ALCHEMY_RPC_URL صراحة (رابط كامل جاهز من لوحة
+# Alchemy)، يُستخدم كما هو مباشرة. وإلا، يُبنى تلقائياً من ALCHEMY_API_KEY
+# (المفتاح وحده يكفي بالصيغة القياسية).
+_alchemy_rpc_explicit = os.getenv("ALCHEMY_RPC_URL", "").strip()
+ALCHEMY_API_KEY = os.getenv("ALCHEMY_API_KEY", "").strip()
+ALCHEMY_RPC_URL = _alchemy_rpc_explicit or f"https://solana-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}"
 ALCHEMY_WS_URL = f"wss://solana-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}"
 
 # GoPlus Security: بديل مجاني بالكامل لـ RugCheck — لا يحتاج اشتراكاً مدفوعاً
@@ -22,9 +30,23 @@ GOPLUS_API_BASE = "https://api.gopluslabs.io/api/v1"
 # المعاملة فوراً (getTransaction) — لأن نفس المزود الذي "رأى" الحدث أولاً
 # عبر الإشعار غالباً يملك تفاصيله فوراً، بخلاف مزود مختلف (Alchemy) قد
 # يتأخر في فهرسة نفس المعاملة ببضع أجزاء من الثانية.
-HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", "").strip()
-HELIUS_RPC_URL = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
-HELIUS_WS_URL = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
+# Helius: يُستخدم لـ WebSocket Subscriptions (logsSubscribe) ولجلب تفاصيل
+# المعاملة فوراً (getTransaction) — لأن نفس المزود الذي "رأى" الحدث أولاً
+# عبر الإشعار غالباً يملك تفاصيله فوراً، بخلاف مزود مختلف (Alchemy) قد
+# يتأخر في فهرسة نفس المعاملة ببضع أجزاء من الثانية.
+#
+# مرونة مقصودة: يقبل هذا المتغير إما المفتاح وحده (الصيغة الموصى بها)، أو
+# الرابط الكامل كما يظهر في لوحة Helius مباشرة (يبدأ بـ https:// أو wss://)
+# — كلاهما يعمل تلقائياً بدون أي استخراج يدوي مطلوب منك.
+_helius_raw = os.getenv("HELIUS_API_KEY", "").strip()
+if _helius_raw.startswith("http") or _helius_raw.startswith("wss://"):
+    HELIUS_RPC_URL = _helius_raw.replace("wss://", "https://").replace("ws://", "http://")
+    HELIUS_WS_URL = _helius_raw.replace("https://", "wss://").replace("http://", "ws://")
+    HELIUS_API_KEY = _helius_raw.split("api-key=")[-1] if "api-key=" in _helius_raw else _helius_raw
+else:
+    HELIUS_API_KEY = _helius_raw
+    HELIUS_RPC_URL = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
+    HELIUS_WS_URL = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
 
 # Chainstack: بديل احتياطي لـ Helius — حد معدل أعلى بكثير (25 طلب/ثانية
 # مستمرة، بدل سقف شهري صارم). الرابط يحتوي المفتاح مدمجاً بداخله مباشرة
@@ -75,10 +97,13 @@ WS_ENDPOINTS = [url for url in [DRPC_WS_URL, CHAINSTACK_WS_URL, HELIUS_WS_URL, G
 # من أي مزود أضفت مفتاحه في Railway، ويتجاهل الفارغ منها بصمت. عند فشل محاولة
 # على مزود معيّن (مثلاً 429)، المحاولة التالية تجرّب مزوداً مختلفاً تماماً
 # بدل الاصطدام بنفس القيد مرة أخرى. Solana العام دائماً آخر خيار (احتياطي أخير).
+# Alchemy يُضاف فقط إن كان له مفتاح فعلي (وليس فقط رابطاً بمفتاح فارغ داخله)
+_alchemy_usable = ALCHEMY_RPC_URL if (ALCHEMY_API_KEY or _alchemy_rpc_explicit) else ""
+
 RPC_ENDPOINTS = [
     url for url in [
         DRPC_RPC_URL, CHAINSTACK_RPC_URL, HELIUS_RPC_URL, ANKR_RPC_URL,
-        GETBLOCK_RPC_URL, SOLANA_PUBLIC_RPC_URL,
+        GETBLOCK_RPC_URL, _alchemy_usable, SOLANA_PUBLIC_RPC_URL,
     ]
     if url
 ]
