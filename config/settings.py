@@ -185,9 +185,15 @@ class WatchlistSettings:
 class ExitStrategySettings:
     """إعدادات إدارة الصفقة بعد الدخول."""
 
-    take_profit_first_leg_pct: float = 100.0  # عند مضاعفة السعر، اسحب رأس المال الأساسي
-    trailing_stop_pct: float = 15.0           # وقف متحرك من أعلى قمة سعرية (بعد تحقيق ربح)
-    max_drawdown_from_entry_pct: float = 30.0  # وقف خسارة صارم من سعر الدخول مباشرة (حماية من انهيار بدون أي ربح سابق)
+    take_profit_first_leg_pct: float = 100.0  # (قديم، غير مُستخدَم فعلياً حالياً)
+
+    # ═══ نموذج Scalping: جني ربح سريع صغير بدل انتظار موجة كبيرة ═══
+    # الفلسفة: كثرة الصفقات الصغيرة الرابحة أهم من انتظار ربح كبير نادر.
+    # بمجرد تحقيق هدف ربح متواضع، نخرج فوراً ونُحرّر رأس المال لصفقة تالية.
+    scalp_take_profit_pct: float = 10.0        # جني ربح فوري عند +10% من سعر الدخول
+    trailing_stop_pct: float = 7.0             # وقف متحرك أضيق (احتياطي إن لم يتحقق هدف السكالب بعد)
+    max_drawdown_from_entry_pct: float = 20.0  # وقف خسارة أسرع — تحرير رأس المال من الصفقات الخاسرة بسرعة
+
     max_slippage_pct: float = 5.0             # الانزلاق المسموح عند التنفيذ العادي
     emergency_slippage_pct: float = 20.0      # الانزلاق المسموح عند الإغلاق الطارئ (خروج مضمون)
 
@@ -227,7 +233,7 @@ class FastTrackSettings:
     """
     enabled: bool = True
     max_entry_age_minutes: int = 60      # لا نفحص زخم عملة عمرها أكثر من هذا (الفرصة غالباً فاتت)
-    check_interval_seconds: int = 30     # تكرار الفحص — أسرع بكثير من watchlist العادي (15 دقيقة)
+    check_interval_seconds: int = 10     # سُرِّع من 30 إلى 10 لملاءمة إيقاع Scalping — رد فعل أسرع على الفرص
 
 
 FAST_TRACK = FastTrackSettings()
