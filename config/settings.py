@@ -24,8 +24,6 @@ TATUM_SOLANA_RPC_URL = "https://api.mainnet.solana.com"
 
 PRIMARY_RPC_URL = ALCHEMY_RPC_URL
 SECONDARY_RPC_ENDPOINTS = [HELIUS_RPC_URL]
-PRIMARY_WS_URL = "wss://mainnet.helius-rpc.com/?api-key=your-key"
-WS_ENDPOINTS = [PRIMARY_WS_URL]
 RPC_ENDPOINTS = [ALCHEMY_RPC_URL, HELIUS_RPC_URL]
 
 DEX_ALLOWLIST = ["pump.fun", "raydium", "orca", "marinade", "sanctum"]
@@ -40,9 +38,11 @@ class FiltersConfig:
     min_holder_accounts: int = 10
     max_dev_wallet_pct: float = 50.0
     require_fixed_supply: bool = True
+    require_burn_or_lock: bool = False
+    require_freeze_authority_disabled: bool = False
     sharia_filters_enabled: bool = False
     forbidden_keywords: list = field(default_factory=lambda: [
-        "scam", "rug", "fake", "honeypot", "exit", "dump", "exit_scam"
+        "scam", "rug", "fake", "honeypot", "exit", "dump"
     ])
 
 FILTERS = FiltersConfig()
