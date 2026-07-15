@@ -86,24 +86,35 @@ SOLANA_PUBLIC_WS_URL = "wss://api.mainnet-beta.solana.com"
 PRIMARY_RPC_URL = CHAINSTACK_RPC_URL or HELIUS_RPC_URL
 PRIMARY_WS_URL = CHAINSTACK_WS_URL or HELIUS_WS_URL
 
+# ── حماية شاملة: كل مزوّد يُضاف لقائمة التناوب فقط إذا كانت بيانات اعتماده
+# الفعلية موجودة، وليس فقط لأن الرابط الناتج "نص غير فارغ" ── هذا أصلحناه
+# سابقاً لـAlchemy فقط، لكن نفس الخلل بالضبط كان موجوداً في Helius وGetBlock
+# (رابط جاهز حتى بمفتاح فارغ، مثل ".../?api-key=" بلا شيء بعدها)، وسبّب
+# فعلياً خطأ "401 missing api key" حين يصل دور هذا المزود في التناوب.
+_helius_usable = HELIUS_RPC_URL if HELIUS_API_KEY else ""
+_helius_ws_usable = HELIUS_WS_URL if HELIUS_API_KEY else ""
+_getblock_usable = GETBLOCK_RPC_URL if GETBLOCK_RPC_URL else ""
+_getblock_ws_usable = GETBLOCK_WS_URL if GETBLOCK_WS_URL else ""
+_alchemy_usable = ALCHEMY_RPC_URL if (ALCHEMY_API_KEY or _alchemy_rpc_explicit) else ""
+
 # قائمة تناوب لمزودي WebSocket — عند فشل أحدهم (403 منتهي الصلاحية، 429 حد
 # معدل، إلخ) نتحول تلقائياً للتالي بدل التعطل الكامل بانتظار تدخل يدوي.
-# GetBlock أُضيف كمزود ثالث بعد أن انتهت صلاحية Chainstack واستُنفدت حصة
-# Helius معاً في نفس الوقت — درس مهم: كلما زاد عدد المزودين، قلّ احتمال
-# توقف الاكتشاف بالكامل.
-WS_ENDPOINTS = [url for url in [DRPC_WS_URL, CHAINSTACK_WS_URL, HELIUS_WS_URL, GETBLOCK_WS_URL, SOLANA_PUBLIC_WS_URL] if url]
+WS_ENDPOINTS = [
+    url for url in [
+        DRPC_WS_URL, CHAINSTACK_WS_URL, _helius_ws_usable,
+        _getblock_ws_usable, SOLANA_PUBLIC_WS_URL,
+    ]
+    if url
+]
 
 # قائمة تناوب (Round-robin) بين كل مزودي HTTP المتاحين فعلياً — يُبنى تلقائياً
 # من أي مزود أضفت مفتاحه في Railway، ويتجاهل الفارغ منها بصمت. عند فشل محاولة
 # على مزود معيّن (مثلاً 429)، المحاولة التالية تجرّب مزوداً مختلفاً تماماً
 # بدل الاصطدام بنفس القيد مرة أخرى. Solana العام دائماً آخر خيار (احتياطي أخير).
-# Alchemy يُضاف فقط إن كان له مفتاح فعلي (وليس فقط رابطاً بمفتاح فارغ داخله)
-_alchemy_usable = ALCHEMY_RPC_URL if (ALCHEMY_API_KEY or _alchemy_rpc_explicit) else ""
-
 RPC_ENDPOINTS = [
     url for url in [
-        DRPC_RPC_URL, CHAINSTACK_RPC_URL, HELIUS_RPC_URL, ANKR_RPC_URL,
-        GETBLOCK_RPC_URL, _alchemy_usable, SOLANA_PUBLIC_RPC_URL,
+        DRPC_RPC_URL, CHAINSTACK_RPC_URL, _helius_usable, ANKR_RPC_URL,
+        _getblock_usable, _alchemy_usable, SOLANA_PUBLIC_RPC_URL,
     ]
     if url
 ]
