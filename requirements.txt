@@ -9,7 +9,6 @@ asyncpg==0.28.0
 psycopg2-binary==2.9.9
 
 # الـ APIs
-httpx==0.25.1
 requests==2.31.0
 
 # التسجيل
