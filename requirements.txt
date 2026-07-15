@@ -1,19 +1,10 @@
-# البوت الأساسي
 solana==0.27.0
 construct==2.10.68
-websockets==12.0
+websockets==10.4
 aiohttp==3.9.1
-
-# قاعدة البيانات
 asyncpg==0.28.0
 psycopg2-binary==2.9.9
-
-# الـ APIs
 requests==2.31.0
-
-# التسجيل
 python-dateutil==2.8.2
-
-# الأدوات
 pydantic==2.5.0
 python-dotenv==1.0.0
