@@ -1,99 +1,102 @@
+"""
+إشعارات تلجرام - الصيغة الدقيقة المطلوبة
+"""
+import logging
+import aiohttp
+from datetime import datetime
 import os
-from dataclasses import dataclass, field
 
-ALCHEMY_RPC_URL = os.getenv("ALCHEMY_RPC_URL", "https://solana-rpc.alchemy.com")
-HELIUS_RPC_URL = os.getenv("HELIUS_RPC_URL", "https://mainnet.helius-rpc.com")
+logger = logging.getLogger("notifier")
+
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-WALLET_PRIVATE_KEY = os.getenv("WALLET_PRIVATE_KEY", "")
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://localhost/sniper_bot")
-FALLBACK_DATABASE_URL = os.getenv("FALLBACK_DATABASE_URL", DATABASE_URL)
-USE_DEVNET = os.getenv("USE_DEVNET", "false").lower() == "true"
-GOPLUS_APP_KEY = os.getenv("GOPLUS_APP_KEY", "")
-GOPLUS_APP_SECRET = os.getenv("GOPLUS_APP_SECRET", "")
-TATUM_API_KEY = os.getenv("TATUM_API_KEY", "")
-JUPITER_API_KEY = os.getenv("JUPITER_API_KEY", "")
-BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY", "")
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
-GOPLUS_API_BASE = "https://api.gopluslabs.io/api/v1"
-DEXSCREENER_API_BASE = "https://api.dexscreener.com/latest/dex"
-BIRDEYE_API_BASE = "https://api.birdeye.so"
-JUPITER_API_BASE = "https://api.jup.ag"
-TATUM_SOLANA_RPC_URL = "https://api.mainnet.solana.com"
 
-PRIMARY_RPC_URL = ALCHEMY_RPC_URL
-SECONDARY_RPC_ENDPOINTS = [HELIUS_RPC_URL, "https://api.mainnet.solana.com"]
-RPC_ENDPOINTS = [ALCHEMY_RPC_URL, HELIUS_RPC_URL, "https://api.mainnet.solana.com"]
+async def send_telegram(message: str) -> bool:
+    """إرسال رسالة تلجرام"""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        logger.warning("⚠️ متغيرات التلجرام غير مضبوطة")
+        return False
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            data = {
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": message,
+                "parse_mode": "Markdown"
+            }
+            async with session.post(TELEGRAM_API, json=data, timeout=10) as resp:
+                if resp.status == 200:
+                    logger.info(f"✅ رسالة تلجرام أرسلت بنجاح")
+                    return True
+                else:
+                    logger.error(f"❌ فشل إرسال التلجرام: {resp.status}")
+                    return False
+    except Exception as e:
+        logger.error(f"❌ خطأ في التلجرام: {e}")
+        return False
 
-DEX_ALLOWLIST = ["pump.fun", "raydium", "orca", "marinade", "sanctum"]
 
-@dataclass
-class FiltersConfig:
-    min_security_score: float = 25.0
-    max_allowed_prior_rugs: int = 3
-    max_dev_wallet_pct: float = 60.0
-    max_single_holder_pct: float = 40.0
-    min_lp_burned_or_locked_pct: float = 0.0
-    require_fixed_supply: bool = False
-    require_burn_or_lock: bool = False
-    require_standard_token_program: bool = True
-    forbid_transfer_restrictions: bool = False
-    forbid_referral_mechanics: bool = False
-    forbidden_keywords: list = field(default_factory=lambda: [
-        "scam", "rug"
-    ])
+async def notify_trade_entry(symbol: str, mint_address: str, entry_amount_sol: float,
+                             entry_price: float, decision: str, stage: str) -> bool:
+    """إخطار بشراء جديد - الصيغة الدقيقة"""
+    message = f"""🟢 تم فتح صفقة جديدة
 
-FILTERS = FiltersConfig()
+العملة: (`{mint_address}`)
+رأس المال: {entry_amount_sol:.4f} SOL
 
-@dataclass
-class WatchlistConfig:
-    check_interval_minutes: int = 2
-    min_watch_hours: float = 0.5
-    max_watch_hours: float = 24.0
-    min_organic_holders_growth: int = 0
+ملخص الفلترة:
+- decision: {decision}
+- stage: {stage}"""
+    
+    return await send_telegram(message)
 
-WATCHLIST = WatchlistConfig()
 
-@dataclass
-class FastTrackConfig:
-    enabled: bool = True
-    check_interval_seconds: int = 20
-    max_entry_age_minutes: int = 60
+async def notify_trade_exit(mint_address: str, entry_amount_sol: float,
+                            exit_amount_sol: float, profit_loss: float, 
+                            profit_pct: float, reason: str, exit_tx: str) -> bool:
+    """إخطار ببيع - الصيغة الدقيقة"""
+    
+    emoji = "🟢" if profit_loss >= 0 else "🔴"
+    
+    message = f"""{emoji} تم إغلاق الصفقة تلقائياً
 
-FAST_TRACK = FastTrackConfig()
+العملة: (`{mint_address}`)
+السبب: {reason}
 
-@dataclass
-class ExitStrategyConfig:
-    max_capital_pct_per_trade: float = 3.0
-    trailing_stop_pct: float = 25.0
-    max_drawdown_from_entry_pct: float = 8.0
-    max_slippage_pct: float = 3.0
-    emergency_slippage_pct: float = 5.0
+رأس المال المستثمر: {entry_amount_sol:.4f} SOL
+العائد عند البيع: {exit_amount_sol:.4f} SOL
+ربح: {profit_loss:.4f} SOL
 
-EXIT_STRATEGY = ExitStrategyConfig()
+رابط المعاملة: https://solscan.io/tx/{exit_tx}"""
+    
+    return await send_telegram(message)
 
-@dataclass
-class PostTradeMonitorConfig:
-    check_interval_seconds: int = 5
-    onchain_check_interval_seconds: int = 5
-    external_check_interval_minutes: int = 60
-    auto_close_on_ownership_change: bool = True
-    auto_close_on_tax_increase_above_pct: float = 15.0
 
-POST_TRADE_MONITOR = PostTradeMonitorConfig()
+async def notify_error(error_type: str, details: str) -> bool:
+    """إخطار بخطأ"""
+    message = f"""🚨 خطأ في البوت
 
-@dataclass
-class MomentumConfig:
-    min_volume_m5_usd: float = 500.0
-    min_price_change_m5_pct: float = 5.0
-    min_liquidity_usd: float = 100.0
-    min_unique_buys_m5: int = 1
-    min_buy_sell_ratio_m5: float = 0.2
+❌ نوع الخطأ: {error_type}
+📝 التفاصيل: {details}
+⏰ الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
+    
+    return await send_telegram(message)
 
-MOMENTUM = MomentumConfig()
 
-SHARIA_FILTERS_ENABLED = os.getenv("SHARIA_FILTERS_ENABLED", "false").lower() == "true"
-DEVNET_FALLBACK_CAPITAL_SOL = 1.0
-MAX_RPC_CALLS_PER_SECOND = 5
-RPC_CALL_TIMEOUT_SECONDS = 30
+async def notify_daily_summary(total_trades: int, winning_trades: int,
+                              total_profit: float, win_rate: float) -> bool:
+    """إخطار بملخص يومي"""
+    emoji = "📈" if total_profit >= 0 else "📉"
+    
+    message = f"""{emoji} ملخص اليوم
+
+📊 إجمالي الصفقات: {total_trades}
+✅ الصفقات الرابحة: {winning_trades}
+📉 الصفقات الخاسرة: {total_trades - winning_trades}
+📈 نسبة النجاح: {win_rate:.1f}%
+💰 الربح الإجمالي: {total_profit:.4f} SOL
+⏰ الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
+    
+    return await send_telegram(message)
