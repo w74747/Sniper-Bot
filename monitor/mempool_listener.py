@@ -42,7 +42,11 @@ RAYDIUM_AMM_V4_PROGRAM_ID = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
 MONITORED_PROGRAM_IDS = [PUMP_FUN_PROGRAM_ID, RAYDIUM_AMM_V4_PROGRAM_ID]
 
 # كل كم ثانية نستقصي (Poll) عن معاملات جديدة لكل برنامج مراقَب
-POLL_INTERVAL_SECONDS = 4
+# كل كم ثانية نستقصي (Poll) عن معاملات جديدة لكل برنامج مراقَب
+# خُفِّضت من 4 إلى 2 ثانية بعد تحسينات الكفاءة (جلسة HTTP دائمة + تناوب
+# مُرتَّب حسب الصحة) — هذا يُضاعف تقريباً عدد فرص الاكتشاف يومياً بدون
+# أي تكلفة إضافية، لأن كل استقصاء أصبح أسرع وأقل هدراً للمحاولات.
+POLL_INTERVAL_SECONDS = 2
 # كم توقيعاً نجلب كحد أقصى في كل دورة استقصاء واحدة لكل برنامج
 SIGNATURES_PER_POLL = 30
 
