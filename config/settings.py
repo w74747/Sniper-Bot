@@ -32,15 +32,14 @@ DEX_ALLOWLIST = ["pump.fun", "raydium", "orca", "marinade", "sanctum"]
 class FiltersConfig:
     min_security_score: float = 40.0
     max_allowed_prior_rugs: int = 2
-    max_allowed_sell_tax_pct: float = 10.0
-    min_liquidity_usd: float = 1000.0
-    max_total_supply: float = 1_000_000_000.0
-    min_holder_accounts: int = 10
     max_dev_wallet_pct: float = 50.0
+    max_single_holder_pct: float = 30.0
+    min_lp_burned_or_locked_pct: float = 0.0
     require_fixed_supply: bool = True
     require_burn_or_lock: bool = False
-    require_freeze_authority_disabled: bool = False
-    sharia_filters_enabled: bool = False
+    require_standard_token_program: bool = True
+    forbid_transfer_restrictions: bool = True
+    forbid_referral_mechanics: bool = True
     forbidden_keywords: list = field(default_factory=lambda: [
         "scam", "rug", "fake", "honeypot", "exit", "dump"
     ])
@@ -67,23 +66,30 @@ FAST_TRACK = FastTrackConfig()
 @dataclass
 class ExitStrategyConfig:
     max_capital_pct_per_trade: float = 5.0
-    tp_target_pct: float = 15.0
-    sl_target_pct: float = -5.0
-    hold_time_minutes: int = 30
+    trailing_stop_pct: float = 20.0
+    max_drawdown_from_entry_pct: float = 10.0
+    max_slippage_pct: float = 2.0
+    emergency_slippage_pct: float = 5.0
 
 EXIT_STRATEGY = ExitStrategyConfig()
 
 @dataclass
 class PostTradeMonitorConfig:
     check_interval_seconds: int = 10
-    max_hold_hours: int = 2
+    onchain_check_interval_seconds: int = 5
+    external_check_interval_minutes: int = 60
+    auto_close_on_ownership_change: bool = True
+    auto_close_on_tax_increase_above_pct: float = 15.0
 
 POST_TRADE_MONITOR = PostTradeMonitorConfig()
 
 @dataclass
 class MomentumConfig:
-    min_volume_1h_usd: float = 5000.0
-    min_price_increase_pct: float = 20.0
+    min_volume_m5_usd: float = 5000.0
+    min_price_change_m5_pct: float = 20.0
+    min_liquidity_usd: float = 1000.0
+    min_unique_buys_m5: int = 5
+    min_buy_sell_ratio_m5: float = 0.5
 
 MOMENTUM = MomentumConfig()
 
