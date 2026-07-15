@@ -1,202 +1,102 @@
 """
-تنبيهات Telegram + Console للبوت
-معدّلة لضمان رسائل واضحة وأخطاء مسجّلة بشكل صحيح
+إشعارات تلجرام - الصيغة الدقيقة المطلوبة
 """
-import asyncio
-import json
 import logging
-from typing import Optional
-
 import aiohttp
+from datetime import datetime
+import os
 
-from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+logger = logging.getLogger("notifier")
 
-logger = logging.getLogger("alerts")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
-# يسجّل الأخطاء في ملف منفصل
-alert_logger = logging.getLogger("alerts.telegram")
 
-
-async def send_telegram_message(message: str, parse_mode: str = "HTML") -> bool:
-    """
-    يرسل رسالة Telegram مع xhandling للأخطاء
-    يرجع True إذا نجح، False إذا فشل
-    """
+async def send_telegram(message: str) -> bool:
+    """إرسال رسالة تلجرام"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.debug("⚠️ Telegram غير مفعّل (missing token أو chat_id)")
+        logger.warning("⚠️ متغيرات التلجرام غير مضبوطة")
         return False
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": parse_mode,
-    }
-
+    
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, timeout=10) as resp:
+            data = {
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": message,
+                "parse_mode": "Markdown"
+            }
+            async with session.post(TELEGRAM_API, json=data, timeout=10) as resp:
                 if resp.status == 200:
-                    logger.info(f"✅ رسالة Telegram أُرسلت بنجاح")
+                    logger.info(f"✅ رسالة تلجرام أرسلت بنجاح")
                     return True
                 else:
-                    text = await resp.text()
-                    alert_logger.error(f"❌ فشل إرسال Telegram: status {resp.status} - {text[:200]}")
+                    logger.error(f"❌ فشل إرسال التلجرام: {resp.status}")
                     return False
-    except asyncio.TimeoutError:
-        alert_logger.error("❌ Telegram timeout بعد 10 ثواني")
-        return False
     except Exception as e:
-        alert_logger.error(f"❌ خطأ إرسال Telegram: {e}")
+        logger.error(f"❌ خطأ في التلجرام: {e}")
         return False
 
 
-async def alert_new_token_detected(
-    mint_address: str,
-    symbol: str,
-    liquidity_usd: float,
-    holders: int,
-    source: str = "unknown"
-) -> bool:
-    """
-    تنبيه عند اكتشاف عملة جديدة
-    """
-    message = f"""
-🚨 <b>عملة جديدة مكتشفة!</b>
+async def notify_trade_entry(symbol: str, mint_address: str, entry_amount_sol: float,
+                             entry_price: float, decision: str, stage: str) -> bool:
+    """إخطار بشراء جديد - الصيغة الدقيقة"""
+    message = f"""🟢 تم فتح صفقة جديدة
 
-📋 <b>البيانات:</b>
-  • Mint: <code>{mint_address[:16]}...</code>
-  • Symbol: {symbol}
-  • السيولة: ${liquidity_usd:,.2f}
-  • الحاملين: {holders}
-  • المصدر: {source}
+العملة: (`{mint_address}`)
+رأس المال: {entry_amount_sol:.4f} SOL
 
-⏳ <i>جاري الفحص...</i>
-"""
-    logger.info(f"🔔 تنبيه جديد: {symbol} من {source}")
-    return await send_telegram_message(message)
-
-
-async def alert_filters_passed(
-    mint_address: str,
-    symbol: str,
-    filter_report: dict
-) -> bool:
-    """
-    تنبيه عند اجتياز جميع الفلاتر
-    """
-    message = f"""
-✅ <b>اجتيازت جميع الفلاتر!</b>
-
-📋 <b>العملة:</b>
-  • Symbol: {symbol}
-  • Mint: <code>{mint_address[:16]}...</code>
-
-🛡️ <b>الفحوصات:</b>
-  • GoPlus: ✓
-  • On-chain: ✓
-  • محاكاة بيع: ✓
-
-🎯 <i>جاهزة للشراء في المسار السريع</i>
-"""
-    logger.info(f"🎯 {symbol} اجتازت كل الفلاتر!")
-    return await send_telegram_message(message)
-
-
-async def alert_buy_executed(
-    symbol: str,
-    mint_address: str,
-    capital_sol: float,
-    tx_hash: str
-) -> bool:
-    """
-    تنبيه عند تنفيذ شراء حقيقي
-    """
-    explorer_url = f"https://solscan.io/tx/{tx_hash}" if tx_hash != "DEVNET_SIMULATED_NO_TX" else "DEVNET"
+ملخص الفلترة:
+- decision: {decision}
+- stage: {stage}"""
     
-    message = f"""
-💰 <b>تم تنفيذ الشراء!</b>
-
-📋 <b>تفاصيل الصفقة:</b>
-  • العملة: {symbol}
-  • المبلغ: {capital_sol} SOL
-  • Tx: <a href="{explorer_url}">اضغط هنا</a>
-
-⏱️ <i>جاري المراقبة...</i>
-"""
-    logger.info(f"💸 شراء تم: {symbol} - {capital_sol} SOL")
-    return await send_telegram_message(message)
+    return await send_telegram(message)
 
 
-async def alert_filters_failed(
-    symbol: str,
-    failed_filter: str,
-    reason: str
-) -> bool:
-    """
-    تنبيه عند فشل أحد الفلاتر (مختصر)
-    """
-    message = f"""
-❌ <b>فشلت الفلاتر</b>
+async def notify_trade_exit(mint_address: str, entry_amount_sol: float,
+                            exit_amount_sol: float, profit_loss: float, 
+                            profit_pct: float, reason: str, exit_tx: str) -> bool:
+    """إخطار ببيع - الصيغة الدقيقة"""
+    
+    emoji = "🟢" if profit_loss >= 0 else "🔴"
+    
+    message = f"""{emoji} تم إغلاق الصفقة تلقائياً
 
-📋 <b>العملة:</b> {symbol}
-🚫 <b>السبب:</b> {failed_filter}
-<code>{reason[:100]}</code>
-"""
-    logger.warning(f"⚠️ {symbol} فشل: {failed_filter}")
-    return await send_telegram_message(message)
+العملة: (`{mint_address}`)
+السبب: {reason}
 
+رأس المال المستثمر: {entry_amount_sol:.4f} SOL
+العائد عند البيع: {exit_amount_sol:.4f} SOL
+ربح: {profit_loss:.4f} SOL
 
-async def alert_emergency_close(
-    symbol: str,
-    reason: str,
-    loss_pct: float = 0.0
-) -> bool:
-    """
-    تنبيه طوارئ عند إغلاق فوري
-    """
-    message = f"""
-🚨 <b>إغلاق طوارئ!</b>
-
-📋 <b>العملة:</b> {symbol}
-⚠️ <b>السبب:</b> {reason}
-📉 <b>الخسارة:</b> {loss_pct:.2f}%
-
-<i>تم الإغلاق تلقائياً لحماية رأس المال</i>
-"""
-    alert_logger.error(f"🚨 إغلاق طوارئ: {symbol} - {reason}")
-    return await send_telegram_message(message)
+رابط المعاملة: https://solscan.io/tx/{exit_tx}"""
+    
+    return await send_telegram(message)
 
 
-async def alert_bot_started() -> bool:
-    """
-    تنبيه بدء البوت
-    """
-    message = """
-✅ <b>البوت بدأ العمل!</b>
+async def notify_error(error_type: str, details: str) -> bool:
+    """إخطار بخطأ"""
+    message = f"""🚨 خطأ في البوت
 
-🔍 جاري البحث عن عملات جديدة...
-⏰ الوقت: الآن
-"""
-    logger.info("🚀 البوت بدأ بنجاح")
-    return await send_telegram_message(message)
+❌ نوع الخطأ: {error_type}
+📝 التفاصيل: {details}
+⏰ الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
+    
+    return await send_telegram(message)
 
 
-async def alert_bot_error(error_msg: str) -> bool:
-    """
-    تنبيه خطأ خطير
-    """
-    message = f"""
-🔴 <b>خطأ خطير في البوت!</b>
+async def notify_daily_summary(total_trades: int, winning_trades: int,
+                              total_profit: float, win_rate: float) -> bool:
+    """إخطار بملخص يومي"""
+    emoji = "📈" if total_profit >= 0 else "📉"
+    
+    message = f"""{emoji} ملخص اليوم
 
-❌ <code>{error_msg[:150]}</code>
-
-⚠️ <i>يرجى المراجعة الفورية!</i>
-"""
-    alert_logger.critical(f"💥 خطأ حرج: {error_msg}")
-    return await send_telegram_message(message)
-
-
-# اختبار بسيط
-if __name__ == "__main__":
-    asyncio.run(alert_bot_started())
+📊 إجمالي الصفقات: {total_trades}
+✅ الصفقات الرابحة: {winning_trades}
+📉 الصفقات الخاسرة: {total_trades - winning_trades}
+📈 نسبة النجاح: {win_rate:.1f}%
+💰 الربح الإجمالي: {total_profit:.4f} SOL
+⏰ الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
+    
+    return await send_telegram(message)
