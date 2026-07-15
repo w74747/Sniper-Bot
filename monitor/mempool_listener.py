@@ -120,14 +120,16 @@ def _extract_instruction_accounts(ix: dict, account_keys: list) -> list:
 RAYDIUM_INITIALIZE2_DISCRIMINATOR = 1  # مؤكَّد من الكود المصدري الرسمي: raydium-io/raydium-amm/instruction.rs
                                         # (enum AmmInstruction: Initialize=0, Initialize2=1, Reserved0=2, ...)
 
+# بصمة (Discriminator) تعليمة "create" في Pump.fun — برنامج مبني بإطار Anchor،
+# فبصمته 8 بايتات (أول 8 بايتات من sha256("global:create"))، وليست بايتاً
+# واحداً كما في Raydium (برنامج غير Anchor). مؤكَّدة من عدة مصادر مستقلة.
+PUMP_FUN_CREATE_DISCRIMINATOR = bytes([24, 30, 200, 40, 5, 28, 7, 119])
+
 
 def _get_instruction_discriminator(ix: dict) -> int:
     """
-    يستخرج البايت الأول من بيانات التعليمة الخام (data) — هذا هو "المُعرِّف"
-    (Discriminator) الذي يحدد أي تعليمة فعلياً من بين تعليمات البرنامج
-    (Initialize2, Deposit, SwapBaseIn, إلخ). Raydium AMM V4 برنامج غير
-    Anchor، فلا يملك IDL معروفاً لـSolana RPC، لذا تصل بياناته كنص Base58
-    خام (وليست jsonParsed بأسماء حقول واضحة) — يجب فك تشفيرها يدوياً.
+    يستخرج البايت الأول من بيانات التعليمة الخام (data) — يُستخدم لـ Raydium
+    تحديداً (برنامج غير Anchor، بصمته بايت واحد فقط حسب ترتيب enum الرسمي).
     """
     data_b58 = ix.get("data", "")
     if not data_b58:
@@ -137,6 +139,24 @@ def _get_instruction_discriminator(ix: dict) -> int:
         return raw[0] if raw else -1
     except Exception:
         return -1
+
+
+def _matches_pump_fun_create(ix: dict) -> bool:
+    """
+    يتحقق من بصمة Anchor الكاملة (8 بايتات) لتعليمة "create" تحديداً في
+    Pump.fun. بدون هذا التحقق، أي معاملة شراء/بيع (Buy/Sell) على عملة
+    موجودة أصلاً — وهي الأكثر تكراراً بمراحل من إنشاء عملات جديدة فعلياً —
+    كانت تُقبَل خطأً كأنها إنشاء عملة جديدة، لأن عدد الحسابات وحده (≥8)
+    غير كافٍ إطلاقاً للتمييز بينهما.
+    """
+    data_b58 = ix.get("data", "")
+    if not data_b58:
+        return False
+    try:
+        raw = base58.b58decode(data_b58)
+        return raw[:8] == PUMP_FUN_CREATE_DISCRIMINATOR
+    except Exception:
+        return False
 
 
 def parse_pump_fun_create_instruction(tx_data: dict) -> Optional[dict]:
@@ -157,6 +177,12 @@ def parse_pump_fun_create_instruction(tx_data: dict) -> Optional[dict]:
         for ix in all_instructions:
             program_id = _extract_program_id(ix, account_keys)
             if program_id != PUMP_FUN_PROGRAM_ID:
+                continue
+
+            # التحقق الحاسم: هل هذه فعلاً تعليمة "create"، أم Buy/Sell عادية
+            # على عملة موجودة أصلاً؟ بدون هذا، معاملات التداول العادية (وهي
+            # الأكثر تكراراً بمراحل) كانت تُقبَل خطأً كإنشاء عملة جديدة.
+            if not _matches_pump_fun_create(ix):
                 continue
 
             ix_accounts = _extract_instruction_accounts(ix, account_keys)
