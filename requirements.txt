@@ -12,14 +12,9 @@ psycopg2-binary==2.9.9
 httpx==0.25.1
 requests==2.31.0
 
-# Dashboard
-flask==3.0.0
-openpyxl==3.10.10
-
 # التسجيل
 python-dateutil==2.8.2
 
 # الأدوات
 pydantic==2.5.0
 python-dotenv==1.0.0
-gunicorn==21.2.0
