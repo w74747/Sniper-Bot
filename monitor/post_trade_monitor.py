@@ -72,46 +72,53 @@ async def check_onchain_signals(trade: dict) -> tuple[bool, str]:
 
 async def check_price_based_signals(trade: dict) -> tuple[bool, str]:
     """
-    يفحص السعر الفعلي الحالي (عبر DexScreener) ويقارنه بأعلى قمة شوهدت منذ
-    فتح الصفقة، لتفعيل وقف خسارة متحرك (trailing stop) — هذا هو الجزء الذي
-    كان مفقوداً تماماً سابقاً: البوت كان يبيع فقط عند اكتشاف تلاعب تقني
-    (ضريبة/تجميد)، وليس عند انهيار سعر طبيعي بدون أي تلاعب.
+    يفحص السعر الفعلي الحالي (عبر DexScreener) لتطبيق منطق Scalping:
 
-    المنطق:
-    1. إذا انخفض السعر من قمته منذ الدخول بنسبة trailing_stop_pct أو أكثر
-       (وكان قد ارتفع فعلاً في وقت ما) → بيع فوري لتثبيت الربح المتبقي.
-    2. إذا انخفض السعر من سعر الدخول مباشرة بنسبة max_drawdown_from_entry_pct
-       (بدون أن يرتفع أصلاً) → وقف خسارة صارم، حماية من انهيار مباشر.
+    1. جني ربح سريع (الأولوية الأولى): بمجرد وصول السعر لهدف ربح متواضع
+       (scalp_take_profit_pct) من سعر الدخول → بيع فوري، بدل انتظار موجة
+       أكبر قد لا تتحقق أبداً. فلسفة Scalping: كثرة الأرباح الصغيرة أهم
+       من انتظار ربح كبير نادر — هذا يُحرّر رأس المال بسرعة لصفقة تالية.
+    2. وقف خسارة متحرك (احتياطي، إن انعكس السعر قبل بلوغ هدف السكالب):
+       خروج عند انخفاض trailing_stop_pct من أعلى قمة شوهدت.
+    3. وقف خسارة صارم: انهيار مباشر من سعر الدخول بدون أي ربح سابق.
     """
     trade_id = trade["id"]
     mint_address = trade["mint_address"]
 
     data = await fetch_from_dexscreener(mint_address)
     if not data or not data.price_usd:
-        return False, ""  # لا بيانات كافية بعد — لا نتخذ قراراً على معلومة ناقصة
+        return False, ""
 
     current_price = data.price_usd
 
     if trade_id not in _entry_price_usd:
         _entry_price_usd[trade_id] = current_price
         _peak_price_usd[trade_id] = current_price
-        return False, ""  # أول قراءة فقط تُستخدم كمرجع، لا قرار عندها
+        return False, ""
 
     entry_price = _entry_price_usd[trade_id]
     _peak_price_usd[trade_id] = max(_peak_price_usd[trade_id], current_price)
     peak_price = _peak_price_usd[trade_id]
 
-    # الحالة 1: وقف خسارة متحرك — العملة ارتفعت فعلاً في وقت ما، ثم بدأت تنهار
+    # الحالة 1 (الأولوية الأولى — جوهر Scalping): وصول هدف ربح سريع صغير
+    gain_pct = ((current_price - entry_price) / entry_price) * 100
+    if gain_pct >= EXIT_STRATEGY.scalp_take_profit_pct:
+        return True, (
+            f"🎯 جني ربح سريع (Scalping): وصل السعر +{gain_pct:.1f}% "
+            f"(الهدف {EXIT_STRATEGY.scalp_take_profit_pct}%) — خروج فوري لتحرير رأس المال"
+        )
+
+    # الحالة 2: وقف خسارة متحرك — العملة ارتفعت قليلاً لكن لم تبلغ هدف السكالب، ثم بدأت تنعكس
     if peak_price > entry_price:
         drop_from_peak_pct = ((peak_price - current_price) / peak_price) * 100
         if drop_from_peak_pct >= EXIT_STRATEGY.trailing_stop_pct:
-            gain_pct = ((current_price - entry_price) / entry_price) * 100
+            gain_now_pct = ((current_price - entry_price) / entry_price) * 100
             return True, (
                 f"وقف خسارة متحرك: انخفض السعر {drop_from_peak_pct:.1f}% من أعلى قمة "
-                f"(الحد {EXIT_STRATEGY.trailing_stop_pct}%) — الربح المُثبَّت الآن ≈ {gain_pct:.1f}%"
+                f"(الحد {EXIT_STRATEGY.trailing_stop_pct}%) — الربح المُثبَّت الآن ≈ {gain_now_pct:.1f}%"
             )
 
-    # الحالة 2: انهيار مباشر بدون أي ارتفاع سابق — وقف خسارة صارم
+    # الحالة 3: انهيار مباشر بدون أي ارتفاع سابق — وقف خسارة صارم
     drop_from_entry_pct = ((entry_price - current_price) / entry_price) * 100
     if drop_from_entry_pct >= EXIT_STRATEGY.max_drawdown_from_entry_pct:
         return True, (
