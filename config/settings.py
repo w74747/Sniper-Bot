@@ -249,6 +249,10 @@ class FastTrackSettings:
     """
     enabled: bool = True
     max_entry_age_minutes: int = 60      # لا نفحص زخم عملة عمرها أكثر من هذا (الفرصة غالباً فاتت)
+    min_age_seconds_before_momentum_check: int = 75  # لا نفحص عملة أصغر من هذا — DexScreener
+                                                      # يحتاج وقتاً لفهرسة السيولة/الحجم الحقيقيين،
+                                                      # وفحص عملة عمرها ثوانٍ قليلة يُرجع دائماً تقريباً
+                                                      # "$0 سيولة" (بيانات ناقصة، وليس حكماً حقيقياً).
     check_interval_seconds: int = 10     # سُرِّع من 30 إلى 10 لملاءمة إيقاع Scalping — رد فعل أسرع على الفرص
 
 
