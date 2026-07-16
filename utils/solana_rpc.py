@@ -87,7 +87,7 @@ async def rpc_call(method: str, params: list, timeout: int = 20, max_retries: in
                     text = await resp.text()
                     _record_failure(target_url)
                     last_error = RuntimeError(
-                        f"RPC status {resp.status} في {method} (محاولة {attempt}/{max_retries}): {text[:200]}"
+                        f"RPC status {resp.status} من [{target_url[:45]}] في {method} (محاولة {attempt}/{max_retries}): {text[:200]}"
                     )
                     if attempt < max_retries:
                         await asyncio.sleep(2 * attempt)
@@ -97,26 +97,26 @@ async def rpc_call(method: str, params: list, timeout: int = 20, max_retries: in
                 if resp.status != 200:
                     text = await resp.text()
                     _record_failure(target_url)
-                    raise RuntimeError(f"RPC status {resp.status} في {method}: {text[:300]}")
+                    raise RuntimeError(f"RPC status {resp.status} من [{target_url[:45]}] في {method}: {text[:300]}")
 
                 data = await resp.json()
                 if "error" in data:
                     _record_failure(target_url)
-                    raise RuntimeError(f"RPC error في {method}: {data['error']}")
+                    raise RuntimeError(f"RPC error من [{target_url[:45]}] في {method}: {data['error']}")
 
                 _record_success(target_url)
                 return data.get("result")
 
         except asyncio.TimeoutError:
             _record_failure(target_url)
-            last_error = RuntimeError(f"انتهت المهلة الزمنية ({timeout}s) أثناء استدعاء {method} (محاولة {attempt}/{max_retries})")
+            last_error = RuntimeError(f"انتهت المهلة الزمنية ({timeout}s) من [{target_url[:45]}] أثناء استدعاء {method} (محاولة {attempt}/{max_retries})")
             if attempt < max_retries:
                 await asyncio.sleep(2 * attempt)
                 continue
             raise last_error
         except aiohttp.ClientError as e:
             _record_failure(target_url)
-            raise RuntimeError(f"خطأ اتصال أثناء استدعاء {method}: {type(e).__name__}: {e}")
+            raise RuntimeError(f"خطأ اتصال من [{target_url[:45]}] أثناء استدعاء {method}: {type(e).__name__}: {e}")
 
     raise last_error
 
