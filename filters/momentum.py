@@ -45,6 +45,71 @@ class MomentumData:
         return self.buys_m5 / self.sells_m5
 
 
+async def fetch_momentum_batch(mint_addresses: list, chain: str = "solana") -> dict:
+    """
+    يفحص حتى 30 عملة في **استدعاء واحد فقط** عبر DexScreener (نقطة نهاية
+    /tokens/v1/ المُجمَّعة)، بدل استدعاء منفصل لكل عملة — هذا هو الإصلاح
+    الجذري لمشكلة 429 المستمرة: كنا نُطلق عشرات الطلبات المتزامنة كل 10
+    ثوانٍ (طلب واحد لكل عملة قيد المراقبة)، بينما DexScreener يسمح بحد
+    أقصى ~60 طلباً/دقيقة إجمالاً — تجميع 30 عملة في طلب واحد يُخفّض عدد
+    الطلبات الفعلية بمقدار 30 ضعفاً تقريباً.
+
+    يرجع قاموساً {mint_address: MomentumData} — العملات التي لا تظهر في
+    الرد (لم تُفهرس بعد) لن تكون مفاتيح في القاموس المُرجَع إطلاقاً.
+    """
+    if not mint_addresses:
+        return {}
+
+    result: dict = {}
+    # DexScreener يقبل 30 عنواناً كحد أقصى لكل استدعاء — نُقسّم القائمة دفعات
+    for i in range(0, len(mint_addresses), 30):
+        batch = mint_addresses[i:i + 30]
+        addresses_param = ",".join(batch)
+        url = f"{DEXSCREENER_API_BASE}/tokens/v1/{chain}/{addresses_param}"
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=10) as resp:
+                    if resp.status != 200:
+                        text = await resp.text()
+                        logger.info(f"📉 DexScreener (دفعة {len(batch)} عملة) رجع status {resp.status}: {text[:150]}")
+                        continue
+                    pairs = await resp.json()
+        except Exception as e:
+            logger.info(f"📉 فشل استعلام DexScreener المُجمَّع: {type(e).__name__}: {e}")
+            continue
+
+        if not pairs:
+            continue
+
+        # قد يُرجع أكثر من pair لنفس العملة (عدة أزواج) — نحتفظ فقط بالأعلى سيولة لكل عنوان
+        best_by_mint: dict = {}
+        for pair in pairs:
+            base_address = (pair.get("baseToken") or {}).get("address", "")
+            if not base_address:
+                continue
+            liquidity = (pair.get("liquidity") or {}).get("usd", 0) or 0
+            if base_address not in best_by_mint or liquidity > best_by_mint[base_address][1]:
+                best_by_mint[base_address] = (pair, liquidity)
+
+        for mint_addr, (pair, _) in best_by_mint.items():
+            try:
+                txns_m5 = (pair.get("txns") or {}).get("m5", {}) or {}
+                result[mint_addr] = MomentumData(
+                    source="dexscreener",
+                    price_usd=float(pair.get("priceUsd") or 0),
+                    price_change_m5_pct=float((pair.get("priceChange") or {}).get("m5", 0) or 0),
+                    volume_m5_usd=float((pair.get("volume") or {}).get("m5", 0) or 0),
+                    buys_m5=int(txns_m5.get("buys", 0) or 0),
+                    sells_m5=int(txns_m5.get("sells", 0) or 0),
+                    liquidity_usd=float((pair.get("liquidity") or {}).get("usd", 0) or 0),
+                )
+            except (TypeError, ValueError):
+                continue
+
+    return result
+
+
 async def fetch_from_dexscreener(mint_address: str, chain: str = "solana") -> Optional[MomentumData]:
     """
     يجلب بيانات الزخم من DexScreener عبر token-pairs/v1 — قد يرجع أكثر من
