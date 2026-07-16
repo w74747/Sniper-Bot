@@ -45,10 +45,13 @@ MONITORED_PROGRAM_IDS = [PUMP_FUN_PROGRAM_ID, RAYDIUM_AMM_V4_PROGRAM_ID]
 
 # كل كم ثانية نستقصي (Poll) عن معاملات جديدة لكل برنامج مراقَب
 # كل كم ثانية نستقصي (Poll) عن معاملات جديدة لكل برنامج مراقَب
-# خُفِّضت من 4 إلى 2 ثانية بعد تحسينات الكفاءة (جلسة HTTP دائمة + تناوب
-# مُرتَّب حسب الصحة) — هذا يُضاعف تقريباً عدد فرص الاكتشاف يومياً بدون
-# أي تكلفة إضافية، لأن كل استقصاء أصبح أسرع وأقل هدراً للمحاولات.
-POLL_INTERVAL_SECONDS = 2
+# ملاحظة مهمة: خُفِّضت سابقاً من 4 إلى 2 ثانية لملاءمة إيقاع Scalping، لكن
+# هذا سبّب فعلياً 429 مستمراً على كل المزودين معاً في نفس اللحظة (تجاوز
+# الحد المجمّع لكل الحصص المجانية معاً) — وهذا أخطر من مجرد تأخير الاكتشاف،
+# لأنه استهلك الحصة اللازمة لجلب تفاصيل الاكتشافات الحقيقية عبر getTransaction
+# أيضاً (نفس مجمّع RPC_ENDPOINTS المشترك)، فأدى لفقدان فرص حقيقية بصمت.
+# التراجع لـ 3 ثوانٍ كتوازن أكثر أماناً بين السرعة واستقرار الحصص المجانية.
+POLL_INTERVAL_SECONDS = 3
 # كم توقيعاً نجلب كحد أقصى في كل دورة استقصاء واحدة لكل برنامج
 SIGNATURES_PER_POLL = 30
 
@@ -466,7 +469,22 @@ async def poll_for_new_pool_events():
 
     logger.info("بدء الاستقصاء الدوري (Polling) لأحداث السيولة الجديدة...")
 
+    last_health_report = 0.0
+
     while True:
+        # تقرير دوري لصحة كل مزود (كل ~60 ثانية) — يجيب فوراً "أي مزود يعمل
+        # فعلياً الآن وأيهم متوقف؟" بدل تتبع كل رسالة خطأ يدوياً واحدة تلو الأخرى.
+        now = asyncio.get_event_loop().time()
+        if now - last_health_report > 60:
+            from utils.solana_rpc import _endpoint_health
+            if _endpoint_health:
+                summary = ", ".join(
+                    f"{url[:35]}...→{data['score']:.0f}"
+                    for url, data in sorted(_endpoint_health.items(), key=lambda x: -x[1]["score"])
+                )
+                logger.info(f"🩺 صحة المزودين الحالية: {summary}")
+            last_health_report = now
+
         for program_id in MONITORED_PROGRAM_IDS:
             try:
                 sigs = await get_signatures_for_address_polling(
