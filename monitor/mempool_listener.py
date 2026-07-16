@@ -41,7 +41,11 @@ logger = logging.getLogger("mempool_listener")
 PUMP_FUN_PROGRAM_ID = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
 RAYDIUM_AMM_V4_PROGRAM_ID = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
 
-MONITORED_PROGRAM_IDS = [PUMP_FUN_PROGRAM_ID, RAYDIUM_AMM_V4_PROGRAM_ID]
+# ملاحظة مهمة: Pump.fun لم يعد يُستقصى هنا عبر RPC — أصبح يُكتشف عبر
+# monitor/pumpportal_listener.py (WebSocket مجاني مخصص، أسرع وأدق وبدون أي
+# ضغط على حصص RPC المشتركة). الاستقصاء هنا الآن مقتصر على Raydium فقط،
+# وهذا يُخفّف العبء على كل مزودي RPC للنصف تقريباً (برنامج واحد بدل اثنين).
+MONITORED_PROGRAM_IDS = [RAYDIUM_AMM_V4_PROGRAM_ID]
 
 # كل كم ثانية نستقصي (Poll) عن معاملات جديدة لكل برنامج مراقَب
 # كل كم ثانية نستقصي (Poll) عن معاملات جديدة لكل برنامج مراقَب
