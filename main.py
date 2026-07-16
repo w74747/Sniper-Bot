@@ -20,9 +20,17 @@ from db import trades as db
 from db.log_handler import install_database_log_handler, flush_log_queue_loop
 from monitor.post_trade_monitor import run_monitor_loop
 from monitor.watchlist import run_watchlist_loop, run_fast_track_loop
-from monitor.mempool_listener import run_mempool_listener
 from monitor.pumpportal_listener import run_pumpportal_listener
 from monitor.ai_analyst import run_hourly_ai_analysis_loop
+
+# ملاحظة مهمة: run_mempool_listener (استقصاء Raydium عبر HTTP polling) أُزيل
+# من التشغيل بالكامل — Raydium من أكثر برامج Solana ازدحاماً (يشمل كل
+# عمليات البيع/الشراء العادية على آلاف العملات، وليس فقط إنشاء pool جديد)،
+# وكان يستهلك كل حصص RPC المتبقية (429 شبه مستمر) بينما إنتاجيته الفعلية
+# (عملات حقيقية اجتازت الفلاتر) كانت شبه معدومة مقارنة بـPump.fun عبر
+# PumpPortal. التركيز الآن بالكامل على Pump.fun (أسرع، أدق، ومجاني تماماً).
+# الكود لا يزال موجوداً في monitor/mempool_listener.py لإعادة التفعيل لاحقاً
+# إن توفرت حصص RPC كافية (مثلاً بعد ترقية أحد المزودين).
 
 # إنشاء مجلد logs تلقائياً إن لم يكن موجوداً — ضروري على خوادم سحابية مثل Railway
 # لأن Git لا يرفع المجلدات الفارغة، فالمجلد قد لا يكون موجوداً فعلياً بعد النشر
@@ -53,7 +61,6 @@ async def main():
 
     tasks = [
         asyncio.create_task(run_pumpportal_listener()),  # اكتشاف Pump.fun فوري ومجاني (WebSocket مخصص)
-        asyncio.create_task(run_mempool_listener()),  # استقصاء Raydium فقط الآن (HTTP polling)
         asyncio.create_task(run_watchlist_loop()),     # مراجعة قائمة الانتظار العادية (24-72 ساعة)
         asyncio.create_task(run_fast_track_loop()),    # المسار السريع (رصد الانطلاق الصاروخي)
         asyncio.create_task(run_monitor_loop()),       # مراقبة الصفقات المفتوحة (جاهز)
