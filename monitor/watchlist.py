@@ -22,7 +22,7 @@ from trading.executor import execute_buy
 from trading.swap_client import load_wallet_keypair
 from filters.reputation import evaluate_reputation
 from filters.sell_simulation import simulate_sell, evaluate_simulation_result
-from filters.momentum import check_momentum
+from filters.momentum import check_momentum, fetch_momentum_batch, evaluate_momentum
 from filters.tatum_check import verify_mint_authority_disabled
 from utils.solana_rpc import get_token_largest_accounts, rpc_call, get_wallet_sol_balance
 
@@ -186,16 +186,26 @@ async def evaluate_watchlist_entry(entry: dict) -> tuple[str, str]:
     )
 
 
-async def evaluate_fast_track_entry(entry: dict) -> Optional[tuple[str, str]]:
+async def evaluate_fast_track_entry(entry: dict, prefetched_momentum=None) -> Optional[tuple[str, str]]:
     """
     المسار السريع: يفحص هل العملة تُظهر "انطلاقاً صاروخياً" حقيقياً الآن،
     وإن كان كذلك، يشغّل نفس فحوصات الأمان — بدون انتظار 24-72 ساعة.
+
+    prefetched_momentum: بيانات زخم جاهزة مسبقاً (من استعلام مُجمَّع لعدة
+    عملات دفعة واحدة عبر fetch_momentum_batch) — تجنّباً لاستعلام DexScreener
+    منفرد لكل عملة، وهو ما كان يتسبب فعلياً في تجاوز حد المعدل (429) لدى
+    DexScreener بسبب كثرة الاستعلامات المتزامنة. إن لم تُمرَّر، يعود الكود
+    للاستعلام الفردي القديم (احتياطي فقط، وليس المسار المُستخدَم فعلياً).
     """
     age_minutes = (time.time() - entry["added_at"]) / 60
     if age_minutes > FAST_TRACK.max_entry_age_minutes:
         return None
 
-    momentum_ok, momentum_reason = await check_momentum(entry["mint_address"])
+    if prefetched_momentum is not None:
+        momentum_ok, momentum_reason = evaluate_momentum(prefetched_momentum)
+    else:
+        momentum_ok, momentum_reason = await check_momentum(entry["mint_address"])
+
     if not momentum_ok:
         logger.info(f"📊 [{entry['symbol']}] لا زخم كافٍ بعد: {momentum_reason}")
         return None
@@ -313,10 +323,18 @@ async def run_fast_track_loop():
                 cutoff_timestamp,
             )
 
+            # الإصلاح الجذري لمشكلة 429 المستمرة على DexScreener: نجمع كل
+            # عناوين العملات المطلوب فحصها ونستعلم عنها دفعة واحدة (حتى 30
+            # عملة لكل استدعاء HTTP)، بدل استعلام منفرد لكل عملة على حدة —
+            # هذا يُخفّض عدد الطلبات الفعلية بعشرات الأضعاف.
+            mint_addresses = [row["mint_address"] for row in rows]
+            momentum_by_mint = await fetch_momentum_batch(mint_addresses) if mint_addresses else {}
+
             for row in rows:
                 entry = dict(row)
                 try:
-                    result = await evaluate_fast_track_entry(entry)
+                    prefetched = momentum_by_mint.get(entry["mint_address"])
+                    result = await evaluate_fast_track_entry(entry, prefetched_momentum=prefetched)
 
                     if result is None:
                         continue
