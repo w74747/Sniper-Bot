@@ -74,6 +74,11 @@ DRPC_WS_URL = f"wss://lb.drpc.live/solana/{DRPC_API_KEY}" if DRPC_API_KEY else "
 TATUM_API_KEY = os.getenv("TATUM_API_KEY", "").strip()
 TATUM_SOLANA_RPC_URL = "https://solana-mainnet.gateway.tatum.io/"
 
+# DeepSeek: يُستخدم لتحليل ذكي دوري (كل ساعة) لحالة البوت العامة، عبر تلخيص
+# إحصائيات الفحص + عيّنة من الأخطاء المهمة، وإرسال تقرير عربي مختصر لتيليجرام.
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
+DEEPSEEK_API_BASE = "https://api.deepseek.com"
+
 # Solana العام: مزوّد Solana Foundation الرسمي، مجاني تماماً وبدون أي تسجيل أو
 # مفتاح — لكن حدوده صارمة جداً ووثوقيته متذبذبة (مصمم للطوارئ/الاختبار وليس
 # الاستخدام المكثف). نضعه كخيار احتياطي أخير في نهاية قائمة التناوب فقط،
