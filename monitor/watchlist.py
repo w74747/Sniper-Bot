@@ -201,6 +201,13 @@ async def evaluate_fast_track_entry(entry: dict, prefetched_momentum=None) -> Op
     if age_minutes > FAST_TRACK.max_entry_age_minutes:
         return None
 
+    age_seconds = time.time() - entry["added_at"]
+    if age_seconds < FAST_TRACK.min_age_seconds_before_momentum_check:
+        # العملة صغيرة جداً — DexScreener لم يُفهرس سيولتها الحقيقية بعد على
+        # الأرجح، فأي فحص الآن سيُرجع "$0" غير حقيقي بدل حكم فعلي. نتجاهل
+        # بصمت (سيُعاد فحصها تلقائياً في الدورة القادمة بعد بضع ثوانٍ).
+        return None
+
     if prefetched_momentum is not None:
         momentum_ok, momentum_reason = evaluate_momentum(prefetched_momentum)
     else:
@@ -326,8 +333,15 @@ async def run_fast_track_loop():
             # الإصلاح الجذري لمشكلة 429 المستمرة على DexScreener: نجمع كل
             # عناوين العملات المطلوب فحصها ونستعلم عنها دفعة واحدة (حتى 30
             # عملة لكل استدعاء HTTP)، بدل استعلام منفرد لكل عملة على حدة —
-            # هذا يُخفّض عدد الطلبات الفعلية بعشرات الأضعاف.
-            mint_addresses = [row["mint_address"] for row in rows]
+            # هذا يُخفّض عدد الطلبات الفعلية بعشرات الأضعاف. نستبعد أيضاً
+            # العملات الأصغر من min_age_seconds_before_momentum_check لأن
+            # فحصها الآن سيُرجع بيانات ناقصة على الأرجح (توفير إضافي للحصة).
+            now_ts = time.time()
+            eligible_rows = [
+                row for row in rows
+                if (now_ts - row["added_at"]) >= FAST_TRACK.min_age_seconds_before_momentum_check
+            ]
+            mint_addresses = [row["mint_address"] for row in eligible_rows]
             momentum_by_mint = await fetch_momentum_batch(mint_addresses) if mint_addresses else {}
 
             for row in rows:
