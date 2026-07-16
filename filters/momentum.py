@@ -56,14 +56,19 @@ async def fetch_from_dexscreener(mint_address: str, chain: str = "solana") -> Op
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=8) as resp:
                 if resp.status != 200:
-                    logger.debug(f"DexScreener رجع status {resp.status} لـ {mint_address}")
+                    text = await resp.text()
+                    # تشخيص مؤقت (INFO بدل debug المخفي): نحتاج رؤية السبب
+                    # الحقيقي بدل نتيجة غامضة "تعذّر الحصول على بيانات" فقط —
+                    # نفس الدرس المستفاد سابقاً مع تشخيص مزودي RPC.
+                    logger.info(f"📉 DexScreener رجع status {resp.status} لـ {mint_address}: {text[:150]}")
                     return None
                 pairs = await resp.json()
     except Exception as e:
-        logger.debug(f"فشل الاتصال بـ DexScreener لـ {mint_address}: {type(e).__name__}: {e}")
+        logger.info(f"📉 فشل الاتصال بـ DexScreener لـ {mint_address}: {type(e).__name__}: {e}")
         return None
 
     if not pairs:
+        logger.info(f"📉 DexScreener رجع قائمة فارغة لـ {mint_address} (لم تُفهرس بعد على الأرجح)")
         return None
 
     # اختيار الـ pair ذا أعلى سيولة من بين كل الأزواج المُرجعة
