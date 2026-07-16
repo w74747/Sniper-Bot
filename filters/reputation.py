@@ -6,9 +6,11 @@
 هذه الفحوصات أبطأ قليلاً من الفلاتر on-chain المباشرة لكنها لا تزال ضمن نافذة
 الثواني المعدودة، وتُعتبر جزءاً من "الفلترة الآلية عند الدخول".
 """
+import asyncio
 import hashlib
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Optional
 
@@ -23,6 +25,32 @@ logger = logging.getLogger("reputation")
 
 # تخزين مؤقت للتوكن في الذاكرة (access_token, وقت الانتهاء بالثواني)
 _token_cache = {"access_token": None, "expires_at": 0}
+
+# ── مُقيِّد معدل ذاتي لـ GoPlus ──
+# الحد الرسمي المؤكَّد من GoPlus للفريتير المجاني: 30 طلب/دقيقة بالضبط.
+# بدون هذا، الحجم الكبير الجديد من الاكتشافات (عبر PumpPortal) كان يتجاوز
+# هذا الحد بسهولة، فيُرفَض أغلب الطلبات (فشل غير حقيقي، وليس تقييماً فعلياً
+# للعملة) — بدل رفضها، ننتظر بذكاء حتى يتوفر "مقعد" ضمن النافذة الزمنية.
+GOPLUS_MAX_CALLS_PER_MINUTE = 25  # هامش أمان تحت الحد الرسمي (30) عمداً
+_goplus_call_times: deque = deque()
+_goplus_rate_limit_lock = asyncio.Lock()
+
+
+async def _wait_for_goplus_rate_limit():
+    """يحجز "مقعداً" ضمن نافذة الدقيقة الأخيرة، وينتظر إذا كانت ممتلئة بدل الفشل الفوري."""
+    async with _goplus_rate_limit_lock:
+        while True:
+            now = time.time()
+            while _goplus_call_times and now - _goplus_call_times[0] > 60:
+                _goplus_call_times.popleft()
+
+            if len(_goplus_call_times) < GOPLUS_MAX_CALLS_PER_MINUTE:
+                _goplus_call_times.append(now)
+                return
+
+            wait_time = 60 - (now - _goplus_call_times[0]) + 0.1
+            logger.debug(f"⏳ حد معدل GoPlus الذاتي ممتلئ — انتظار {wait_time:.1f}s قبل المحاولة التالية")
+            await asyncio.sleep(max(wait_time, 0.1))
 
 
 @dataclass
@@ -60,6 +88,7 @@ async def get_goplus_access_token() -> Optional[str]:
     url = f"{GOPLUS_API_BASE}/token"
     payload = {"app_key": GOPLUS_APP_KEY, "time": now, "sign": sign}
 
+    await _wait_for_goplus_rate_limit()
     async with aiohttp.ClientSession() as session:
         try:
             async with session.post(url, json=payload, timeout=10) as resp:
@@ -144,6 +173,7 @@ async def check_goplus_security(mint_address: str) -> Optional[GoPlusResult]:
     params = {"contract_addresses": mint_address}
 
     async def _attempt(headers: dict, label: str) -> Optional[GoPlusResult]:
+        await _wait_for_goplus_rate_limit()
         async with aiohttp.ClientSession() as session:
             try:
                 async with session.get(url, params=params, headers=headers, timeout=10) as resp:
