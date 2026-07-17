@@ -69,8 +69,65 @@ async def execute_buy(
     return trade_id
 
 
+async def execute_partial_sell(trade: dict, sell_fraction: float, reason: str) -> float:
+    """
+    ينفّذ بيعاً جزئياً فقط (وليس إغلاقاً كاملاً للصفقة) — يُستخدَم لاستراتيجية
+    "الركوب المجاني" (Free Riding): عند مضاعفة السعر، نبيع نصف الكمية فقط
+    لاسترداد رأس المال، ونُبقي الصفقة "مفتوحة" في قاعدة البيانات (لا يُستدعى
+    db.record_exit هنا إطلاقاً) لمتابعة مراقبة النصف المتبقي بنفس المنطق.
+
+    يرجع صافي العائد بالـSOL من هذا البيع الجزئي فقط (لإضافته لاحقاً لعائد
+    البيع النهائي عند إغلاق الصفقة بالكامل، لضمان حساب ربح/خسارة دقيق).
+    """
+    mint_address = trade["mint_address"]
+    symbol = trade["symbol"]
+
+    if USE_DEVNET:
+        logger.info(f"[DEVNET] محاكاة بيع جزئي ({sell_fraction*100:.0f}%) لـ {symbol}")
+        return trade["capital_invested_sol"] * sell_fraction
+
+    keypair = load_wallet_keypair()
+    wallet_pubkey = str(keypair.pubkey())
+
+    token_balance = await get_wallet_token_balance(wallet_pubkey, mint_address)
+    if token_balance <= 0:
+        logger.warning(f"رصيد {symbol} صفر — تعذّر تنفيذ البيع الجزئي")
+        return 0.0
+
+    sell_amount = int(token_balance * sell_fraction)
+    if sell_amount <= 0:
+        return 0.0
+
+    try:
+        tx_hash, quote = await build_and_send_swap(
+            input_mint=mint_address,
+            output_mint=SOL_MINT_ADDRESS,
+            amount=sell_amount,
+            slippage_bps=int(EXIT_STRATEGY.max_slippage_pct * 100),
+        )
+        proceeds_lamports = float(quote.get("outAmount", 0))
+        proceeds_sol = proceeds_lamports / LAMPORTS_PER_SOL
+    except Exception as e:
+        logger.error(f"فشل تنفيذ البيع الجزئي لـ {symbol}: {e}")
+        return 0.0
+
+    logger.info(
+        f"🏃 ركوب مجاني: بيع {sell_fraction*100:.0f}% من {symbol} — "
+        f"استرداد {proceeds_sol:.4f} SOL — السبب: {reason}"
+    )
+    await notifier.send_telegram_message(
+        f"🏃 <b>ركوب مجاني مُفعَّل</b>\n\n"
+        f"العملة: {symbol} (<code>{mint_address}</code>)\n"
+        f"بِيع {sell_fraction*100:.0f}% من الكمية عند مضاعفة السعر\n"
+        f"استرداد رأس مال: {proceeds_sol:.4f} SOL\n"
+        f"الكمية المتبقية ({(1-sell_fraction)*100:.0f}%) تستمر بلا أي ضغط — "
+        f"رأس المال الأصلي مُؤمَّن بالفعل"
+    )
+    return proceeds_sol
+
+
 async def _execute_sell(
-    trade: dict, reason: str, slippage_pct: float, flagged: bool
+    trade: dict, reason: str, slippage_pct: float, flagged: bool, extra_proceeds_sol: float = 0.0
 ):
     """منطق مشترك للبيع العادي والطارئ — يختلفان فقط في نسبة الانزلاق المسموح."""
     mint_address = trade["mint_address"]
@@ -109,33 +166,39 @@ async def _execute_sell(
                 logger.error(f"فشل تنفيذ البيع لـ {trade['symbol']}: {e}")
                 raise
 
+    # إضافة أي عائد مُسترَد سابقاً من بيع جزئي (ركوب مجاني) — لحساب ربح/خسارة
+    # دقيق يعكس الصفقة بأكملها، وليس فقط الجزء الأخير المتبقي منها.
+    total_proceeds_sol = proceeds_sol + extra_proceeds_sol
+
     profit_loss = await db.record_exit(
-        trade["id"], exit_price, proceeds_sol, reason, tx_hash, flagged=flagged
+        trade["id"], exit_price, total_proceeds_sol, reason, tx_hash, flagged=flagged
     )
     cumulative = await db.get_cumulative_performance()
     await notifier.alert_auto_closed(
         trade["symbol"], mint_address, reason,
-        trade["capital_invested_sol"], proceeds_sol, profit_loss, tx_hash,
+        trade["capital_invested_sol"], total_proceeds_sol, profit_loss, tx_hash,
         cumulative=cumulative,
     )
     return profit_loss
 
 
-async def execute_normal_sell(trade: dict, reason: str = "تحقيق هدف الربح / وقف الخسارة"):
+async def execute_normal_sell(trade: dict, reason: str = "تحقيق هدف الربح / وقف الخسارة", extra_proceeds_sol: float = 0.0):
     """بيع عادي (ضمن استراتيجية الخروج المخطط لها: take profit / trailing stop)."""
     return await _execute_sell(
-        trade, reason, slippage_pct=EXIT_STRATEGY.max_slippage_pct, flagged=False
+        trade, reason, slippage_pct=EXIT_STRATEGY.max_slippage_pct, flagged=False,
+        extra_proceeds_sol=extra_proceeds_sol,
     )
 
 
-async def execute_emergency_sell(trade: dict, reason: str):
+async def execute_emergency_sell(trade: dict, reason: str, extra_proceeds_sol: float = 0.0):
     """
     بيع طارئ فوري (عند اكتشاف دليل on-chain قاطع أو تأكيد بشري لشبهة).
     يستخدم انزلاق أعلى (emergency_slippage_pct) لضمان الخروج حتى لو بسعر أسوأ قليلاً.
     """
     logger.warning(f"تنفيذ بيع طارئ للصفقة #{trade['id']} — السبب: {reason}")
     return await _execute_sell(
-        trade, reason, slippage_pct=EXIT_STRATEGY.emergency_slippage_pct, flagged=True
+        trade, reason, slippage_pct=EXIT_STRATEGY.emergency_slippage_pct, flagged=True,
+        extra_proceeds_sol=extra_proceeds_sol,
     )
 
 
