@@ -105,16 +105,23 @@ async def check_organic_growth(mint_address: str, holders_at_add: int) -> dict:
     """
     يفحص المؤشرات العضوية الحالية مقابل لحظة الإضافة للـ watchlist.
 
-    ملاحظة تنفيذية مهمة (تقريب معروف ومقصود):
-    getTokenLargestAccounts يرجع فقط أكبر 20 حاملاً كحد أقصى (قيد من Solana RPC
-    نفسه، وليس قيداً منّا) — لذلك "عدد الحاملين" هنا هو تقريب وليس عدّاً دقيقاً.
+    إصلاح جذري وحاسم: كان الكود سابقاً يضع current_holders = holders_at_add
+    عند أي فشل تقني في القراءة (429/403/إلخ، وهي متكررة جداً)، مما يجعل
+    holders_growth = 0 دائماً عند الفشل — وبما أن 0 أقل من الحد الأدنى
+    المطلوب دوماً، كانت العملة تبقى "قيد المراقبة" حتى 72 ساعة ثم **تُرفض
+    تلقائياً كـ"منتهية الصلاحية"** — حتى لو كان نموها الحقيقي ممتازاً فعلاً!
+    الفشل التقني في القياس كان يُترجَم صامتاً إلى "رفض نهائي بعد 72 ساعة"،
+    بدل "لم نتمكن من الحكم بعد". هذا الإصلاح يُميّز الحالتين بوضوح تام عبر
+    data_available، ليعرف الكود المستدعي ألا يحتسب الفشل التقني ضد العملة.
     """
     try:
         largest_accounts = await get_token_largest_accounts(mint_address, max_retries=6)
         current_holders = sum(1 for h in largest_accounts if float(h.get("amount", 0)) > 0)
+        data_available = True
     except Exception as e:
         logger.warning(f"تعذّر فحص النمو العضوي لـ {mint_address}: {e}")
         current_holders = holders_at_add
+        data_available = False
 
     holders_growth = current_holders - holders_at_add
 
@@ -122,6 +129,7 @@ async def check_organic_growth(mint_address: str, holders_at_add: int) -> dict:
         "current_holders": current_holders,
         "holders_growth": holders_growth,
         "organic_volume_ratio": None,
+        "data_available": data_available,
     }
 
 
@@ -163,6 +171,25 @@ async def evaluate_watchlist_entry(entry: dict) -> tuple[str, str]:
 
     growth_data = await check_organic_growth(entry["mint_address"], entry["holders_at_add"])
 
+    # إصلاح حاسم: إن تعذّر القياس تقنياً (فشل RPC)، لا نحتسب هذا إطلاقاً ضد
+    # العملة — لا كـ"نمو صفري" ولا كخطوة نحو انتهاء الصلاحية عند 72 ساعة.
+    # نبقيها "قيد المراقبة" فقط، وننتظر دورة لاحقة قد ينجح فيها القياس فعلياً
+    # (خصوصاً مع تناوب عدة مزودين، فشل مزود الآن لا يعني فشله في الدورة القادمة).
+    if not growth_data["data_available"]:
+        # صمام أمان: إن استمر الفشل التقني لفترة طويلة جداً (أضعاف مهلة
+        # الانتظار العادية)، ننهي المراقبة بسبب مُصنَّف بوضوح كـ"فشل تقني"
+        # — وليس "لا يوجد نمو" — لتفادي تراكم آلاف العملات في القائمة للأبد
+        # فقط لأن كل مزودينا فشلوا معها تحديداً بلا نهاية.
+        if age_hours >= WATCHLIST.max_watch_hours * 3:
+            return "expired", (
+                f"فشل تقني متكرر في القياس لفترة طويلة جداً ({age_hours:.1f}h) — "
+                f"تصنيف: فشل تقني، وليس حكماً على العملة نفسها"
+            )
+        return "still_watching", (
+            f"تعذّر قياس النمو تقنياً هذه الدورة ({age_hours:.1f}h) — "
+            f"سيُعاد المحاولة لاحقاً، لن يُحتسَب هذا ضد مهلة الانتهاء"
+        )
+
     if growth_data["holders_growth"] < 0:
         return "rejected", "انخفاض عدد الحاملين — إشارة سلبية واضحة"
 
@@ -171,7 +198,7 @@ async def evaluate_watchlist_entry(entry: dict) -> tuple[str, str]:
 
     if growth_data["holders_growth"] < WATCHLIST.min_organic_holders_growth:
         if age_hours >= WATCHLIST.max_watch_hours:
-            return "expired", "انتهت فترة المراقبة القصوى دون نمو عضوي كافٍ"
+            return "expired", "انتهت فترة المراقبة القصوى دون نمو عضوي كافٍ (بناءً على بيانات حقيقية مقاسة فعلياً)"
         return "still_watching", f"نمو عضوي غير كافٍ بعد ({age_hours:.1f}h)"
 
     security_ok, security_reason = await run_security_checks(
