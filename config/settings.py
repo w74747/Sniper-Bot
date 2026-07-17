@@ -7,18 +7,13 @@ from dataclasses import dataclass, field
 from typing import List
 
 # ── مفاتيح API (تُقرأ من متغيرات البيئة .env — لا تضع مفاتيح حقيقية هنا مباشرة) ──
-# Alchemy: بديل مجاني بفريتير أسخى من Helius (30 مليون Compute Unit شهرياً مجاناً)
-# Alchemy: بديل مجاني بفريتير أسخى (30 مليون Compute Unit شهرياً مجاناً).
-# لا يدعم WebSocket Subscriptions لـ Solana (مؤكد رسمياً)، لكنه ممتاز
-# كمصدر HTTP إضافي في التناوب — كان مُهملاً سابقاً رغم توفره فعلياً.
 #
-# مرونة مقصودة: إن وُضع ALCHEMY_RPC_URL صراحة (رابط كامل جاهز من لوحة
-# Alchemy)، يُستخدم كما هو مباشرة. وإلا، يُبنى تلقائياً من ALCHEMY_API_KEY
-# (المفتاح وحده يكفي بالصيغة القياسية).
-_alchemy_rpc_explicit = os.getenv("ALCHEMY_RPC_URL", "").strip()
-ALCHEMY_API_KEY = os.getenv("ALCHEMY_API_KEY", "").strip()
-ALCHEMY_RPC_URL = _alchemy_rpc_explicit or f"https://solana-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}"
-ALCHEMY_WS_URL = f"wss://solana-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}"
+# ملاحظة مهمة: Alchemy أُزيل بالكامل من المشروع (قرار صريح) — لا يوجد أي
+# تعريف أو محاولة اتصال به إطلاقاً في أي ملف بعد الآن. اللجوء الافتراضي
+# الوحيد في كل نقاط الكود أصبح PRIMARY_RPC_URL (يعتمد على Chainstack ثم
+# Helius تلقائياً)، بدل الاعتماد المتفرق على Alchemy في أكثر من مكان كما
+# كان يحدث سابقاً — وهذا ما كان يُسبب استمرار محاولات الاتصال به حتى بعد
+# حذف مفتاحه من Railway.
 
 # GoPlus Security: بديل مجاني بالكامل لـ RugCheck — لا يحتاج اشتراكاً مدفوعاً
 # مفتاح API اختياري (App Key/Secret) لرفع حد الطلبات، لكن الخدمة تعمل بدونه بحد أساسي مجاني
@@ -28,12 +23,8 @@ GOPLUS_API_BASE = "https://api.gopluslabs.io/api/v1"
 
 # Helius: يُستخدم لـ WebSocket Subscriptions (logsSubscribe) ولجلب تفاصيل
 # المعاملة فوراً (getTransaction) — لأن نفس المزود الذي "رأى" الحدث أولاً
-# عبر الإشعار غالباً يملك تفاصيله فوراً، بخلاف مزود مختلف (Alchemy) قد
-# يتأخر في فهرسة نفس المعاملة ببضع أجزاء من الثانية.
-# Helius: يُستخدم لـ WebSocket Subscriptions (logsSubscribe) ولجلب تفاصيل
-# المعاملة فوراً (getTransaction) — لأن نفس المزود الذي "رأى" الحدث أولاً
-# عبر الإشعار غالباً يملك تفاصيله فوراً، بخلاف مزود مختلف (Alchemy) قد
-# يتأخر في فهرسة نفس المعاملة ببضع أجزاء من الثانية.
+# عبر الإشعار غالباً يملك تفاصيله فوراً، بخلاف مزود مختلف قد يتأخر في
+# فهرسة نفس المعاملة ببضع أجزاء من الثانية.
 #
 # مرونة مقصودة: يقبل هذا المتغير إما المفتاح وحده (الصيغة الموصى بها)، أو
 # الرابط الكامل كما يظهر في لوحة Helius مباشرة (يبدأ بـ https:// أو wss://)
@@ -61,11 +52,12 @@ ANKR_RPC_URL = os.getenv("ANKR_RPC_URL", "").strip()
 GETBLOCK_RPC_URL = os.getenv("GETBLOCK_RPC_URL", "").strip()
 GETBLOCK_WS_URL = os.getenv("GETBLOCK_WS_URL", "").strip()
 
-# dRPC: أكبر حصة مجانية حتى الآن (210 مليون CU/شهرياً)، ويدعم WebSocket فعلياً
-# على الفريتير (بخلاف Ankr وGetBlock اللذين يحصران WS بالباقات المدفوعة).
-DRPC_API_KEY = os.getenv("DRPC_API_KEY", "").strip()
-DRPC_RPC_URL = f"https://lb.drpc.live/solana/{DRPC_API_KEY}" if DRPC_API_KEY else ""
-DRPC_WS_URL = f"wss://lb.drpc.live/solana/{DRPC_API_KEY}" if DRPC_API_KEY else ""
+# ملاحظة: dRPC أُزيل نهائياً من المشروع (قرار صريح) — منتج JSON-RPC الخام
+# غير متاح على فريتيره لـSolana (رسالة الخطأ المؤكَّدة: "chain is not
+# available on freetier"), ومنتجهم البديل ("Data & Wallet API") هو REST
+# عالي المستوى (أرصدة/معاملات/NFTs)، وليس JSON-RPC خام — لا يتوافق مع بنية
+# استدعاءاتنا الحالية (getAccountInfo, getTokenLargestAccounts, إلخ) بدون
+# إعادة هندسة كاملة غير مبرَّرة حالياً.
 
 # Tatum: يُستخدم حصراً كـ"رأي ثانٍ مستقل" — تأكيد أخير قبل تنفيذ الشراء
 # الفعلي مباشرة، وليس ضمن التناوب العام (حصته الصغيرة 100 ألف/شهرياً تناسب
@@ -87,26 +79,25 @@ SOLANA_PUBLIC_RPC_URL = "https://api.mainnet-beta.solana.com"
 SOLANA_PUBLIC_WS_URL = "wss://api.mainnet-beta.solana.com"
 
 # المزود الأساسي المُستخدم فعلياً: Chainstack إن أُضيف في Railway، وإلا
-# Helius تلقائياً (بدون كسر أي شيء إن لم تُضِف Chainstack إطلاقاً).
+# Helius تلقائياً (بدون كسر أي شيء إن لم تُضِف Chainstack إطلاقاً). هذا هو
+# اللجوء الافتراضي الوحيد في كل الكود الآن — بدل Alchemy سابقاً.
 PRIMARY_RPC_URL = CHAINSTACK_RPC_URL or HELIUS_RPC_URL
 PRIMARY_WS_URL = CHAINSTACK_WS_URL or HELIUS_WS_URL
 
-# ── حماية شاملة: كل مزوّد يُضاف لقائمة التناوب فقط إذا كانت بيانات اعتماده
-# الفعلية موجودة، وليس فقط لأن الرابط الناتج "نص غير فارغ" ── هذا أصلحناه
-# سابقاً لـAlchemy فقط، لكن نفس الخلل بالضبط كان موجوداً في Helius وGetBlock
-# (رابط جاهز حتى بمفتاح فارغ، مثل ".../?api-key=" بلا شيء بعدها)، وسبّب
-# فعلياً خطأ "401 missing api key" حين يصل دور هذا المزود في التناوب.
+# حماية شاملة: كل مزوّد يُضاف لقائمة التناوب فقط إذا كانت بيانات اعتماده
+# الفعلية موجودة، وليس فقط لأن الرابط الناتج "نص غير فارغ" (رابط جاهز حتى
+# بمفتاح فارغ، مثل ".../?api-key=" بلا شيء بعدها، يُعتبر خطأً "موجوداً").
 _helius_usable = HELIUS_RPC_URL if HELIUS_API_KEY else ""
 _helius_ws_usable = HELIUS_WS_URL if HELIUS_API_KEY else ""
 _getblock_usable = GETBLOCK_RPC_URL if GETBLOCK_RPC_URL else ""
 _getblock_ws_usable = GETBLOCK_WS_URL if GETBLOCK_WS_URL else ""
-_alchemy_usable = ALCHEMY_RPC_URL if (ALCHEMY_API_KEY or _alchemy_rpc_explicit) else ""
 
 # قائمة تناوب لمزودي WebSocket — عند فشل أحدهم (403 منتهي الصلاحية، 429 حد
 # معدل، إلخ) نتحول تلقائياً للتالي بدل التعطل الكامل بانتظار تدخل يدوي.
+# dRPC غير مُدرَج (Solana غير متاح على فريتيره لهذا النوع من الاستدعاءات).
 WS_ENDPOINTS = [
     url for url in [
-        DRPC_WS_URL, CHAINSTACK_WS_URL, _helius_ws_usable,
+        CHAINSTACK_WS_URL, _helius_ws_usable,
         _getblock_ws_usable, SOLANA_PUBLIC_WS_URL,
     ]
     if url
@@ -116,10 +107,11 @@ WS_ENDPOINTS = [
 # من أي مزود أضفت مفتاحه في Railway، ويتجاهل الفارغ منها بصمت. عند فشل محاولة
 # على مزود معيّن (مثلاً 429)، المحاولة التالية تجرّب مزوداً مختلفاً تماماً
 # بدل الاصطدام بنفس القيد مرة أخرى. Solana العام دائماً آخر خيار (احتياطي أخير).
+# لا Alchemy، ولا dRPC (كلاهما مُزالان نهائياً من هذه القائمة).
 RPC_ENDPOINTS = [
     url for url in [
-        DRPC_RPC_URL, CHAINSTACK_RPC_URL, _helius_usable, ANKR_RPC_URL,
-        _getblock_usable, _alchemy_usable, SOLANA_PUBLIC_RPC_URL,
+        CHAINSTACK_RPC_URL, _helius_usable, ANKR_RPC_URL,
+        _getblock_usable, SOLANA_PUBLIC_RPC_URL,
     ]
     if url
 ]
@@ -192,8 +184,6 @@ class WatchlistSettings:
     max_watch_hours: int = 72
     min_organic_holders_growth: int = 8    # ملاحظة حاسمة: getTokenLargestAccounts يُرجع 20 حاملاً كحد أقصى (قيد
                                             # من Solana RPC نفسه) — أي رقم أعلى من ~15-18 هنا مستحيل التحقق رياضياً!
-                                            # كان مضبوطاً سابقاً على 50 (خطأ حسابي جعل هذا الفحص عائقاً مطلقاً
-                                            # يمنع أي صفقة من المسار العادي 24-72 ساعة من النجاح إطلاقاً).
     check_interval_minutes: int = 15       # كل كم دقيقة نعيد فحص الـ watchlist
 
 
@@ -204,8 +194,6 @@ class ExitStrategySettings:
     take_profit_first_leg_pct: float = 100.0  # (قديم، غير مُستخدَم فعلياً حالياً)
 
     # ═══ نموذج Scalping: جني ربح سريع صغير بدل انتظار موجة كبيرة ═══
-    # الفلسفة: كثرة الصفقات الصغيرة الرابحة أهم من انتظار ربح كبير نادر.
-    # بمجرد تحقيق هدف ربح متواضع، نخرج فوراً ونُحرّر رأس المال لصفقة تالية.
     scalp_take_profit_pct: float = 10.0        # جني ربح فوري عند +10% من سعر الدخول
     trailing_stop_pct: float = 7.0             # وقف متحرك أضيق (احتياطي إن لم يتحقق هدف السكالب بعد)
     max_drawdown_from_entry_pct: float = 20.0  # وقف خسارة أسرع — تحرير رأس المال من الصفقات الخاسرة بسرعة
@@ -223,25 +211,13 @@ class ExitStrategySettings:
 class MomentumSettings:
     """
     عتبات رصد "الانطلاق الصاروخي" في أول دقائق — منفصلة تماماً عن فلاتر
-    الأمان (GoPlus) وفلاتر watchlist طويلة الأمد. هذه تجيب سؤالاً مختلفاً:
-    "هل هذه العملة تتحرك بقوة الآن؟" وليس "هل هي آمنة تقنياً؟".
+    الأمان (GoPlus) وفلاتر watchlist طويلة الأمد.
     """
-    # نافذة القياس الأساسية (5 دقائق) — الأنسب لرصد زخم لحظي جداً
-    #
-    # ملاحظة استراتيجية مهمة: خُفِّضت هذه العتبات بشكل كبير بعد اكتشاف تناقض
-    # حقيقي في التصميم — كنا نطلب ارتفاعاً (+15%) أكبر من هدف الخروج السريع
-    # نفسه (+10% scalp_take_profit_pct)! هذا يعني أننا كنا نُلاحق العملة
-    # بعد أن ارتفعت فعلاً (وربما اقتربت من القمة)، بدل الدخول مبكراً في بداية
-    # الحركة كما تقتضي فلسفة Scalping الحقيقية (دخول سريع + خروج سريع بربح
-    # صغير). خفض العتبة يزيد عدد الفرص المُلتقَطة، ويعتمد على شبكة الأمان
-    # القوية عند الخروج (جني ربح سريع + وقف متحرك ضيق + وقف خسارة صارم)
-    # لإدارة المخاطرة، بدل الاعتماد فقط على تشديد شرط الدخول.
-    min_price_change_m5_pct: float = 5.0       # ارتفاع سعر خلال آخر 5 دقائق (خُفِّض من 15%)
-    min_buy_sell_ratio_m5: float = 1.2         # نسبة الشراء للبيع (خُفِّض من 1.5)
-    min_volume_m5_usd: float = 1000.0          # حد أدنى لحجم التداول (خُفِّض من $2000)
-    min_unique_buys_m5: int = 6                # حد أدنى لعدد معاملات الشراء (خُفِّض من 10)
-    min_liquidity_usd: float = 2000.0          # حد أدنى للسيولة — لم نخفّضه كثيراً، فهذا خط الأمان
-                                                # الحقيقي الوحيد ضد التلاعب السهل بعملة سيولتها ضئيلة جداً
+    min_price_change_m5_pct: float = 5.0       # ارتفاع سعر خلال آخر 5 دقائق
+    min_buy_sell_ratio_m5: float = 1.2         # نسبة الشراء للبيع
+    min_volume_m5_usd: float = 1000.0          # حد أدنى لحجم التداول
+    min_unique_buys_m5: int = 6                # حد أدنى لعدد معاملات الشراء
+    min_liquidity_usd: float = 2000.0          # حد أدنى للسيولة — خط الأمان ضد التلاعب
 
 
 MOMENTUM = MomentumSettings()
@@ -252,15 +228,12 @@ class FastTrackSettings:
     """
     إعدادات "المسار السريع" — دخول فوري متى ظهر زخم صاروخي حقيقي (momentum)
     مع اجتياز فحوصات الأمان الأساسية (GoPlus + محاكاة البيع)، بدل انتظار
-    24-72 ساعة الكاملة. يعمل بالتوازي مع watchlist العادي دون التأثير عليه.
+    24-72 ساعة الكاملة.
     """
     enabled: bool = True
-    max_entry_age_minutes: int = 60      # لا نفحص زخم عملة عمرها أكثر من هذا (الفرصة غالباً فاتت)
-    min_age_seconds_before_momentum_check: int = 75  # لا نفحص عملة أصغر من هذا — DexScreener
-                                                      # يحتاج وقتاً لفهرسة السيولة/الحجم الحقيقيين،
-                                                      # وفحص عملة عمرها ثوانٍ قليلة يُرجع دائماً تقريباً
-                                                      # "$0 سيولة" (بيانات ناقصة، وليس حكماً حقيقياً).
-    check_interval_seconds: int = 10     # سُرِّع من 30 إلى 10 لملاءمة إيقاع Scalping — رد فعل أسرع على الفرص
+    max_entry_age_minutes: int = 60
+    min_age_seconds_before_momentum_check: int = 75
+    check_interval_seconds: int = 10
 
 
 FAST_TRACK = FastTrackSettings()
@@ -270,21 +243,13 @@ FAST_TRACK = FastTrackSettings()
 class PostTradeMonitorSettings:
     """إعدادات المراقبة بعد الدخول (الطبقتان: on-chain آلية + خارجية دورية)."""
 
-    onchain_check_interval_seconds: int = 5     # فحص on-chain كل كم ثانية
-    external_check_interval_minutes: int = 60   # فحص المصادر الخارجية كل كم دقيقة
+    onchain_check_interval_seconds: int = 5
+    external_check_interval_minutes: int = 60
 
-    # عتبات إغلاق تلقائي فوري (دليل on-chain قاطع — لا حاجة لمراجعة بشرية)
-    # ملاحظة مهمة: رُفعت من 15% إلى 25% بعد ملاحظة أن ارتفاع الضريبة/تأثير
-    # البيع خلال أول دقائق غالباً انزلاق سعري طبيعي (Price Impact) ناتج عن
-    # زيادة التداول على Bonding Curve نفسه، وليس دليل احتيال حقيقي دائماً —
-    # كان هذا يُغلق صفقات رابحة جداً (حتى +120% زخم) خلال دقائق قليلة فقط،
-    # قبل أن يُتاح لها وقت كافٍ للصعود. وقف الخسارة المتحرك (trailing stop)
-    # يبقى خط الدفاع الأساسي الأدق، القائم على السعر الفعلي وليس تقريب الضريبة.
     auto_close_on_tax_increase_above_pct: float = 25.0
     auto_close_on_lp_withdrawal: bool = True
     auto_close_on_ownership_change: bool = True
 
-    # عتبات تنبيه فقط (دليل خارجي غير مؤكد — يتطلب تأكيد بشري قبل الإغلاق)
     alert_only_on_external_signal: bool = True
 
 
