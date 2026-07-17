@@ -40,10 +40,25 @@ else:
     HELIUS_WS_URL = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
 
 # Chainstack: بديل احتياطي لـ Helius — حد معدل أعلى بكثير (25 طلب/ثانية
-# مستمرة، بدل سقف شهري صارم). الرابط يحتوي المفتاح مدمجاً بداخله مباشرة
-# (وليس معاملاً منفصلاً)، لذا نأخذه كاملاً كما هو من Railway Variables.
-CHAINSTACK_RPC_URL = os.getenv("CHAINSTACK_RPC_URL", "").strip()
-CHAINSTACK_WS_URL = os.getenv("CHAINSTACK_WS_URL", "").strip()
+# مستمرة، بدل سقف شهري صارم).
+#
+# مرونة مقصودة: بعض حسابات Chainstack تُعطي رابطاً بمفتاح مدمج مباشرة
+# (CHAINSTACK_RPC_URL كاملاً)، بينما حسابات أخرى (كهذا الحساب) تتطلب
+# مصادقة Basic Auth (اسم مستخدم/كلمة مرور) على الرابط العام بدل المفتاح.
+# ندعم كلا الأسلوبين تلقائياً حسب المتوفر لديك في Railway.
+CHAINSTACK_USERNAME = os.getenv("CHAINSTACK_USERNAME", "").strip()
+CHAINSTACK_PASSWORD = os.getenv("CHAINSTACK_PASSWORD", "").strip()
+_chainstack_raw_url = os.getenv("CHAINSTACK_RPC_URL", "").strip()
+_chainstack_raw_ws = os.getenv("CHAINSTACK_WS_URL", "").strip()
+
+if CHAINSTACK_USERNAME and CHAINSTACK_PASSWORD and not _chainstack_raw_url:
+    # لا يوجد مفتاح مدمج، لكن يوجد اسم مستخدم/كلمة مرور — نبني الرابط بصيغة
+    # Basic Auth المدمجة في الرابط نفسه (يدعمها aiohttp تلقائياً).
+    CHAINSTACK_RPC_URL = f"https://{CHAINSTACK_USERNAME}:{CHAINSTACK_PASSWORD}@solana-mainnet.core.chainstack.com"
+else:
+    CHAINSTACK_RPC_URL = _chainstack_raw_url
+
+CHAINSTACK_WS_URL = _chainstack_raw_ws
 
 # Ankr: مصدر HTTP احتياطي إضافي (WebSocket يتطلب باقة مدفوعة، فلا نستخدمه هنا)
 ANKR_RPC_URL = os.getenv("ANKR_RPC_URL", "").strip()
