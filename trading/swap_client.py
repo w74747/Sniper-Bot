@@ -9,7 +9,7 @@ import aiohttp
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
 
-from config.settings import ALCHEMY_RPC_URL, WALLET_PRIVATE_KEY, JUPITER_API_BASE, JUPITER_API_KEY
+from config.settings import WALLET_PRIVATE_KEY, JUPITER_API_BASE, JUPITER_API_KEY
 from utils.solana_rpc import rpc_call
 
 logger = logging.getLogger("swap_executor")
@@ -86,7 +86,7 @@ async def build_and_send_swap(
     1. طلب quote من Jupiter
     2. طلب معاملة swap جاهزة (serialized) من Jupiter Swap API
     3. توقيعها بمفتاح المحفظة المحلي
-    4. إرسالها فعلياً على الشبكة عبر Alchemy RPC
+    4. إرسالها فعلياً على الشبكة عبر RPC
 
     يرجع (tx_signature, quote_data) — quote_data مفيد لاستخراج outAmount الفعلي.
     """
