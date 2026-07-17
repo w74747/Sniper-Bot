@@ -241,7 +241,12 @@ async def evaluate_fast_track_entry(entry: dict, prefetched_momentum=None) -> Op
         momentum_ok, momentum_reason = await check_momentum(entry["mint_address"])
 
     if not momentum_ok:
-        logger.info(f"📊 [{entry['symbol']}] لا زخم كافٍ بعد: {momentum_reason}")
+        # خُفِّض من INFO إلى DEBUG: هذه الرسالة تتكرر آلاف المرات لكل عملة (كل
+        # 10 ثوانٍ لكل عملة قيد المراقبة)، وأصبحت السبب الأكبر في تجاوز
+        # Railway لحد 500 سطر/ثانية وإسقاطه رسائل أخرى قد تكون حرجة فعلاً
+        # (أخطاء حقيقية، تأكيد صفقات). التفاصيل الكاملة لا تزال متاحة عبر
+        # قاعدة البيانات (screening_log) لأي تحليل إحصائي لاحق.
+        logger.debug(f"📊 [{entry['symbol']}] لا زخم كافٍ بعد: {momentum_reason}")
         return None
 
     security_ok, security_reason = await run_security_checks(
