@@ -17,8 +17,7 @@ from typing import Optional
 import aiohttp
 
 from config.settings import (
-    GOPLUS_API_BASE, GOPLUS_APP_KEY, GOPLUS_APP_SECRET,
-    ALCHEMY_RPC_URL, FILTERS,
+    GOPLUS_API_BASE, GOPLUS_APP_KEY, GOPLUS_APP_SECRET, FILTERS,
 )
 
 logger = logging.getLogger("reputation")
@@ -78,17 +77,26 @@ async def get_goplus_access_token() -> Optional[str]:
         logger.warning("GOPLUS_APP_KEY أو GOPLUS_APP_SECRET غير موجودين في البيئة")
         return None
 
-    now = int(time.time())
-    if _token_cache["access_token"] and now < _token_cache["expires_at"] - 60:
-        return _token_cache["access_token"]  # التوكن الحالي ما زال صالحاً
+    # فحص سريع للتوكن المخزَّن مؤقتاً — بدون أي انتظار إن كان لا يزال صالحاً
+    now_check = int(time.time())
+    if _token_cache["access_token"] and now_check < _token_cache["expires_at"] - 60:
+        return _token_cache["access_token"]
 
+    # إصلاح حاسم: الانتظار (إن لزم بسبب القيد الذاتي) يجب أن يحدث هنا، **قبل**
+    # حساب الوقت والتوقيع — وليس بعدهما. كان الترتيب معكوساً سابقاً: نحسب
+    # التوقيع بوقت T، ثم ننتظر (أحياناً 30+ ثانية بسبب الازدحام)، فيصل الطلب
+    # فعلياً بوقت T+30 بينما التوقيع لا يزال يحمل T — GoPlus يرفضه كـ"توقيع
+    # غير صالح" (signature verification failure) لأنه يتحقق من التطابق ضمن
+    # نافذة زمنية ضيقة لمنع إعادة استخدام الطلبات (Replay Attacks).
+    await _wait_for_goplus_rate_limit()
+
+    now = int(time.time())
     sign_raw = f"{GOPLUS_APP_KEY}{now}{GOPLUS_APP_SECRET}"
     sign = hashlib.sha1(sign_raw.encode("utf-8")).hexdigest()
 
     url = f"{GOPLUS_API_BASE}/token"
     payload = {"app_key": GOPLUS_APP_KEY, "time": now, "sign": sign}
 
-    await _wait_for_goplus_rate_limit()
     async with aiohttp.ClientSession() as session:
         try:
             async with session.post(url, json=payload, timeout=10) as resp:
@@ -122,40 +130,36 @@ async def check_deployer_history(deployer_wallet: str) -> DeployerHistoryResult:
     (مثل Bubblemaps API أو قاعدة بيانات مجتمعية لعناوين rug pull موثقة)
     بدل بناء المنطق بالكامل يدوياً، لتقليل نسبة الأخطاء (false negatives).
     """
-    async with aiohttp.ClientSession() as session:
-        try:
-            # مثال: استعلام عن تاريخ المعاملات لمحفظة المطور
-            payload = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "getSignaturesForAddress",
-                "params": [deployer_wallet, {"limit": 50}],
-            }
-            async with session.post(ALCHEMY_RPC_URL, json=payload, timeout=10) as resp:
-                data = await resp.json()
-                tx_count = len(data.get("result", []))
+    try:
+        # إصلاح حرج: كانت هذه الدالة تتصل بـAlchemy مباشرة (بمعزل تام عن
+        # نظام التناوب بين المزودين) — إن كان مفتاح Alchemy غائباً أو
+        # معطّلاً، هذا الاستدعاء يفشل دائماً، فيُرجع الكود "999 rug موثق"
+        # احتياطياً، مما يرفض كل عملة تلقائياً بلا أي فحص حقيقي!
+        from utils.solana_rpc import get_signatures_for_address
+        signatures = await get_signatures_for_address(deployer_wallet, limit=50)
+        tx_count = len(signatures)
 
-            # TODO: تكامل فعلي مع قاعدة بيانات rug pulls موثقة (مثل GoPlus أو مصدر مجتمعي)
-            # هذا السطر مكان الحجز لمنطق التحقق الفعلي — حالياً يرجع صفر كقيمة افتراضية آمنة
-            known_rugs = 0
+        # TODO: تكامل فعلي مع قاعدة بيانات rug pulls موثقة (مثل GoPlus أو مصدر مجتمعي)
+        # هذا السطر مكان الحجز لمنطق التحقق الفعلي — حالياً يرجع صفر كقيمة افتراضية آمنة
+        known_rugs = 0
 
-            return DeployerHistoryResult(
-                prior_token_launches=tx_count,
-                known_prior_rugs=known_rugs,
-                reason=(
-                    "لم يُعثر على سجل rug موثق لهذه المحفظة"
-                    if known_rugs == 0
-                    else f"المحفظة مرتبطة بـ {known_rugs} حالة rug موثقة سابقاً"
-                ),
-            )
-        except Exception as e:
-            logger.warning(f"فشل فحص سجل المطور: {e}")
-            # عند الفشل التقني، نتعامل بحذر: نرجع نتيجة تستدعي رفض العملة احتياطياً
-            return DeployerHistoryResult(
-                prior_token_launches=0,
-                known_prior_rugs=999,
-                reason="تعذّر التحقق تقنياً من سجل المطور — تم الرفض احتياطياً (fail-safe)",
-            )
+        return DeployerHistoryResult(
+            prior_token_launches=tx_count,
+            known_prior_rugs=known_rugs,
+            reason=(
+                "لم يُعثر على سجل rug موثق لهذه المحفظة"
+                if known_rugs == 0
+                else f"المحفظة مرتبطة بـ {known_rugs} حالة rug موثقة سابقاً"
+            ),
+        )
+    except Exception as e:
+        logger.warning(f"فشل فحص سجل المطور: {e}")
+        # عند الفشل التقني، نتعامل بحذر: نرجع نتيجة تستدعي رفض العملة احتياطياً
+        return DeployerHistoryResult(
+            prior_token_launches=0,
+            known_prior_rugs=999,
+            reason="تعذّر التحقق تقنياً من سجل المطور — تم الرفض احتياطياً (fail-safe)",
+        )
 
 
 async def check_goplus_security(mint_address: str) -> Optional[GoPlusResult]:
