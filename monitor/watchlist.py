@@ -15,6 +15,8 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+from solders.pubkey import Pubkey
+
 from config.settings import WATCHLIST, EXIT_STRATEGY, FAST_TRACK, USE_DEVNET
 from db import pool
 from db.trades import record_screening_result
@@ -24,9 +26,18 @@ from filters.reputation import evaluate_reputation
 from filters.sell_simulation import simulate_sell, evaluate_simulation_result
 from filters.momentum import check_momentum, fetch_momentum_batch, evaluate_momentum
 from filters.tatum_check import verify_mint_authority_disabled
-from utils.solana_rpc import get_token_largest_accounts, rpc_call, get_wallet_sol_balance
+from filters.onchain_filters import TokenMetadata, run_all_onchain_filters, parse_spl_mint_account
+from utils.solana_rpc import (
+    get_token_largest_accounts, rpc_call, get_wallet_sol_balance, get_account_info_base64,
+)
 
 logger = logging.getLogger("watchlist")
+
+# عناوين برامج Solana القياسية — لازمة لحساب ATA حساب bonding curve في Pump.fun
+# (نفس المشتقة المستخدمة في pumpportal_listener.py، مُكرَّرة هنا عمداً لتفادي
+# استيراد دائري: mempool_listener يستورد من watchlist، فلا يمكن العكس)
+_TOKEN_PROGRAM_ID = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+_ASSOCIATED_TOKEN_PROGRAM_ID = Pubkey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
 
 SOL_FEE_RESERVE = 0.01
 DEVNET_FALLBACK_CAPITAL_SOL = 1.0
@@ -101,6 +112,87 @@ async def is_already_in_watchlist(mint_address: str) -> bool:
     return hours_since < WATCHLIST_REJECTION_COOLDOWN_HOURS
 
 
+async def run_onchain_filters_for_entry(entry: dict) -> tuple[bool, str]:
+    """
+    ينفّذ الفحص الأمني الكامل المكلف (RPC: قراءة العقد + توزيع الحيازة) —
+    يُستدعى الآن فقط بعد تأكيد الزخم (المسار السريع) أو عند الاقتراب من
+    قرار المسار العادي، وليس عند كل اكتشاف كما كان سابقاً. هذا هو جوهر
+    إعادة الهيكلة: توفير ميزانية RPC للعملات النادرة الواعدة فقط.
+    """
+    mint_address = entry["mint_address"]
+    dex = (entry.get("dex") or "").lower()
+    pool_address = entry.get("pool_address", "")
+    deployer_wallet = entry.get("deployer_wallet", "")
+
+    try:
+        mint_data_b64 = await get_account_info_base64(mint_address)
+        mint_info = parse_spl_mint_account(mint_data_b64)
+    except Exception as e:
+        return False, f"تعذّر قراءة بيانات العقد تقنياً: {e}"
+
+    try:
+        largest_accounts = await get_token_largest_accounts(mint_address)
+        holder_data_available = True
+    except Exception:
+        largest_accounts = []
+        holder_data_available = False
+
+    total_supply = mint_info["supply"] or 1
+    dev_wallet_pct = 0.0
+    top_holder_pct_excluding_lp = 0.0
+
+    # لـ Pump.fun: نحسب عنوان ATA الخاص بحساب bonding curve (نفس العنوان الذي
+    # نستثنيه من حساب "أكبر حامل" — يملك تقريباً كل العرض عند الإطلاق بتصميم
+    # البروتوكول نفسه، وليس شبهة احتيال).
+    known_lp_token_accounts = set()
+    if dex == "pump.fun" and pool_address:
+        try:
+            bonding_curve_pk = Pubkey.from_string(pool_address)
+            mint_pk = Pubkey.from_string(mint_address)
+            derived, _ = Pubkey.find_program_address(
+                [bytes(bonding_curve_pk), bytes(_TOKEN_PROGRAM_ID), bytes(mint_pk)],
+                _ASSOCIATED_TOKEN_PROGRAM_ID,
+            )
+            known_lp_token_accounts.add(str(derived))
+        except Exception as e:
+            logger.debug(f"تعذّر حساب ATA لـ bonding curve: {e}")
+
+    for holder in largest_accounts:
+        amount = float(holder.get("amount", 0))
+        pct = (amount / total_supply) * 100 if total_supply else 0
+        address = holder.get("address", "")
+        if address in known_lp_token_accounts:
+            continue
+        if address == deployer_wallet:
+            dev_wallet_pct = max(dev_wallet_pct, pct)
+        top_holder_pct_excluding_lp = max(top_holder_pct_excluding_lp, pct)
+
+    # حرق LP: Pump.fun يُستثنى دائماً (Bonding Curve، وليس LP تقليدي) — نفس
+    # الاستثناء المُطبَّق في الفلتر الأصلي منذ اكتشاف هذه المشكلة سابقاً.
+    lp_burned_or_locked_pct = 100.0 if dex == "pump.fun" else 0.0
+
+    meta = TokenMetadata(
+        mint_address=mint_address,
+        name=entry.get("symbol", ""),
+        symbol=entry.get("symbol", ""),
+        description="",
+        dex=dex,
+        total_supply=total_supply,
+        mint_authority_active=mint_info["mint_authority_active"],
+        freeze_authority_active=mint_info["freeze_authority_active"],
+        lp_burned_or_locked_pct=lp_burned_or_locked_pct,
+        dev_wallet_pct=dev_wallet_pct,
+        top_holder_pct_excluding_lp=top_holder_pct_excluding_lp,
+        holder_data_available=holder_data_available,
+        is_standard_spl_token=True,
+        has_transfer_restriction_hooks=False,
+        has_referral_or_commission_function=False,
+    )
+
+    result = run_all_onchain_filters(meta)
+    return result.passed, result.reason
+
+
 async def check_organic_growth(mint_address: str, holders_at_add: int) -> dict:
     """
     يفحص المؤشرات العضوية الحالية مقابل لحظة الإضافة للـ watchlist.
@@ -133,8 +225,23 @@ async def check_organic_growth(mint_address: str, holders_at_add: int) -> dict:
     }
 
 
-async def run_security_checks(mint_address: str, deployer_wallet: str, pool_address: str) -> tuple[bool, str]:
-    """فحوصات الأمان المشتركة (GoPlus + محاكاة البيع) — يُستدعى من كلا المسارين."""
+async def run_security_checks(entry: dict) -> tuple[bool, str]:
+    """
+    فحوصات الأمان المشتركة الكاملة — يُستدعى من كلا المسارين، لكن فقط
+    بعد تأكيد الزخم (المسار السريع) أو الاقتراب من قرار المسار العادي.
+
+    الترتيب: 1) الفحص الأمني الأساسي (RPC ذاتي، نتحكم بميزانيته) → 2) GoPlus
+    (خدمة خارجية بحصة محدودة أكثر) → 3) محاكاة البيع. هذا الترتيب يُوفّر
+    حصة GoPlus النادرة لمن يجتاز الفحص الأساسي الأرخص أولاً.
+    """
+    mint_address = entry["mint_address"]
+    deployer_wallet = entry.get("deployer_wallet", "")
+    pool_address = entry.get("pool_address", "")
+
+    onchain_ok, onchain_reason = await run_onchain_filters_for_entry(entry)
+    if not onchain_ok:
+        return False, f"فشل الفحص الأساسي: {onchain_reason}"
+
     reputation_ok, reputation_reason = await evaluate_reputation(mint_address, deployer_wallet)
     if not reputation_ok:
         return False, f"فشلت فحوصات السمعة: {reputation_reason}"
@@ -201,9 +308,7 @@ async def evaluate_watchlist_entry(entry: dict) -> tuple[str, str]:
             return "expired", "انتهت فترة المراقبة القصوى دون نمو عضوي كافٍ (بناءً على بيانات حقيقية مقاسة فعلياً)"
         return "still_watching", f"نمو عضوي غير كافٍ بعد ({age_hours:.1f}h)"
 
-    security_ok, security_reason = await run_security_checks(
-        entry["mint_address"], entry.get("deployer_wallet", ""), entry.get("pool_address", "")
-    )
+    security_ok, security_reason = await run_security_checks(entry)
     if not security_ok:
         return "rejected", f"{security_reason} (بعد فترة الانتظار)"
 
@@ -249,9 +354,7 @@ async def evaluate_fast_track_entry(entry: dict, prefetched_momentum=None) -> Op
         logger.debug(f"📊 [{entry['symbol']}] لا زخم كافٍ بعد: {momentum_reason}")
         return None
 
-    security_ok, security_reason = await run_security_checks(
-        entry["mint_address"], entry.get("deployer_wallet", ""), entry.get("pool_address", "")
-    )
+    security_ok, security_reason = await run_security_checks(entry)
     if not security_ok:
         return "rejected", f"زخم قوي لكن فشل الأمان: {security_reason}"
 
