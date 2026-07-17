@@ -44,7 +44,7 @@ def print_header(title: str):
 async def main():
     print_header(f"اختبار السلسلة الكاملة على عنوان: {TEST_MINT_ADDRESS}")
 
-    # ── الخطوة 1: فك تشفير حساب Mint الفعلي عبر Alchemy RPC ──
+    # ── الخطوة 1: فك تشفير حساب Mint الفعلي عبر RPC ──
     print_header("الخطوة 1: قراءة وفك تشفير حساب Mint")
     try:
         mint_data_b64 = await get_account_info_base64(TEST_MINT_ADDRESS)
@@ -56,7 +56,7 @@ async def main():
         print(f"   decimals: {mint_info['decimals']}")
     except Exception as e:
         print(f"❌ فشلت هذه الخطوة: {type(e).__name__}: {e!r}")
-        print("   تحقق من: ALCHEMY_API_KEY في .env صحيح ومفعّل")
+        print("   تحقق من: HELIUS_API_KEY أو CHAINSTACK_RPC_URL في .env صحيح ومفعّل")
         return
 
     # ── الخطوة 2: توزيع الحيازة (أكبر 20 حاملاً) ──
@@ -135,7 +135,7 @@ async def main():
     print_header("انتهى الاختبار")
     print(
         "إذا رأيت ✅ أو ⚠️ في كل خطوة (بدون ❌)، فهذا يعني أن كل الاتصالات\n"
-        "(Alchemy, GoPlus, Jupiter) تعمل بنجاح تقني، بغض النظر عن نتيجة القبول/الرفض."
+        "(RPC، GoPlus، Jupiter) تعمل بنجاح تقني، بغض النظر عن نتيجة القبول/الرفض."
     )
 
 
