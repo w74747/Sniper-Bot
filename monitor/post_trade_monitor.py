@@ -17,7 +17,7 @@ from alerts import notifier
 from filters.onchain_filters import parse_spl_mint_account, KNOWN_BURN_ADDRESSES
 from filters.sell_simulation import simulate_sell, evaluate_simulation_result
 from filters.momentum import fetch_from_dexscreener
-from trading.executor import execute_emergency_sell, execute_normal_sell
+from trading.executor import execute_emergency_sell, execute_normal_sell, execute_partial_sell
 from utils.solana_rpc import get_account_info_base64, get_token_largest_accounts
 
 logger = logging.getLogger("post_trade_monitor")
@@ -27,6 +27,11 @@ logger = logging.getLogger("post_trade_monitor")
 # الحية فقط، وتُفقد بأمان عند إعادة تشغيل البوت (يُعاد بناؤها من أول فحص جديد).
 _peak_price_usd: dict = {}
 _entry_price_usd: dict = {}
+
+# تتبع "الركوب المجاني" — هل بِيع نصف الكمية بالفعل عند مضاعفة السعر؟ وكم
+# استُرِدَّ بالضبط (لإضافته لعائد البيع النهائي عند إغلاق الصفقة بالكامل).
+_free_ride_triggered: set = set()
+_free_ride_recovered_sol: dict = {}
 
 
 async def check_onchain_signals(trade: dict) -> tuple[bool, str]:
@@ -70,17 +75,48 @@ async def check_onchain_signals(trade: dict) -> tuple[bool, str]:
     return False, ""
 
 
+async def check_free_ride_trigger(trade: dict) -> bool:
+    """
+    يتحقق: هل وصل السعر لأول مرة لهدف "الركوب المجاني" (+100% افتراضياً)،
+    ولم يُفعَّل من قبل لهذه الصفقة؟ إن كان كذلك، ينفّذ بيعاً جزئياً فوراً
+    (50% افتراضياً) لاسترداد رأس المال، ويترك الباقي "بلا ضغط نفسي" يستمر
+    تحت مظلة وقف الخسارة المتحرك العادي — بدل الخروج الكامل المبكر الذي
+    كان يُلغي أي فرصة لربح كبير حقيقي (مستوحى من عقلية محترفي meme coins).
+    """
+    trade_id = trade["id"]
+    if trade_id in _free_ride_triggered:
+        return False  # فُعِّل من قبل بالفعل — لا نُكرره
+
+    entry_price = _entry_price_usd.get(trade_id)
+    peak_price = _peak_price_usd.get(trade_id)
+    if entry_price is None or peak_price is None or entry_price <= 0:
+        return False
+
+    gain_pct = ((peak_price - entry_price) / entry_price) * 100
+    if gain_pct < EXIT_STRATEGY.free_ride_trigger_pct:
+        return False
+
+    _free_ride_triggered.add(trade_id)
+    recovered = await execute_partial_sell(
+        trade, EXIT_STRATEGY.free_ride_sell_fraction,
+        f"وصل السعر +{gain_pct:.1f}% (الهدف {EXIT_STRATEGY.free_ride_trigger_pct}%)",
+    )
+    _free_ride_recovered_sol[trade_id] = recovered
+    return True
+
+
 async def check_price_based_signals(trade: dict) -> tuple[bool, str]:
     """
-    يفحص السعر الفعلي الحالي (عبر DexScreener) لتطبيق منطق Scalping:
+    يفحص السعر الفعلي الحالي (عبر DexScreener) لتطبيق منطق الخروج:
 
-    1. جني ربح سريع (الأولوية الأولى): بمجرد وصول السعر لهدف ربح متواضع
-       (scalp_take_profit_pct) من سعر الدخول → بيع فوري، بدل انتظار موجة
-       أكبر قد لا تتحقق أبداً. فلسفة Scalping: كثرة الأرباح الصغيرة أهم
-       من انتظار ربح كبير نادر — هذا يُحرّر رأس المال بسرعة لصفقة تالية.
-    2. وقف خسارة متحرك (احتياطي، إن انعكس السعر قبل بلوغ هدف السكالب):
-       خروج عند انخفاض trailing_stop_pct من أعلى قمة شوهدت.
-    3. وقف خسارة صارم: انهيار مباشر من سعر الدخول بدون أي ربح سابق.
+    1. وقف خسارة متحرك (الآلية المستمرة الأساسية): خروج كامل عند انخفاض
+       trailing_stop_pct من أعلى قمة شوهدت — هذا يعمل من اللحظة الأولى
+       وحتى ارتفاعات ضخمة (لا حد أقصى للربح)، بدل الخروج المبكر القديم
+       الذي كان يُلغي أي فرصة لربح كبير حقيقي.
+    2. وقف خسارة صارم: انهيار مباشر من سعر الدخول بدون أي ربح سابق.
+
+    ملاحظة: "الركوب المجاني" (بيع جزئي عند 2x) يُفحَص بشكل منفصل عبر
+    check_free_ride_trigger — قبل هذه الدالة في حلقة المراقبة الرئيسية.
     """
     trade_id = trade["id"]
     mint_address = trade["mint_address"]
@@ -100,15 +136,7 @@ async def check_price_based_signals(trade: dict) -> tuple[bool, str]:
     _peak_price_usd[trade_id] = max(_peak_price_usd[trade_id], current_price)
     peak_price = _peak_price_usd[trade_id]
 
-    # الحالة 1 (الأولوية الأولى — جوهر Scalping): وصول هدف ربح سريع صغير
-    gain_pct = ((current_price - entry_price) / entry_price) * 100
-    if gain_pct >= EXIT_STRATEGY.scalp_take_profit_pct:
-        return True, (
-            f"🎯 جني ربح سريع (Scalping): وصل السعر +{gain_pct:.1f}% "
-            f"(الهدف {EXIT_STRATEGY.scalp_take_profit_pct}%) — خروج فوري لتحرير رأس المال"
-        )
-
-    # الحالة 2: وقف خسارة متحرك — العملة ارتفعت قليلاً لكن لم تبلغ هدف السكالب، ثم بدأت تنعكس
+    # الحالة 1: وقف خسارة متحرك — الآلية المستمرة الأساسية، تعمل من أي ارتفاع مهما كان صغيراً أو كبيراً
     if peak_price > entry_price:
         drop_from_peak_pct = ((peak_price - current_price) / peak_price) * 100
         if drop_from_peak_pct >= EXIT_STRATEGY.trailing_stop_pct:
@@ -118,7 +146,7 @@ async def check_price_based_signals(trade: dict) -> tuple[bool, str]:
                 f"(الحد {EXIT_STRATEGY.trailing_stop_pct}%) — الربح المُثبَّت الآن ≈ {gain_now_pct:.1f}%"
             )
 
-    # الحالة 3: انهيار مباشر بدون أي ارتفاع سابق — وقف خسارة صارم
+    # الحالة 2: انهيار مباشر بدون أي ارتفاع سابق — وقف خسارة صارم
     drop_from_entry_pct = ((entry_price - current_price) / entry_price) * 100
     if drop_from_entry_pct >= EXIT_STRATEGY.max_drawdown_from_entry_pct:
         return True, (
@@ -155,16 +183,28 @@ async def monitor_single_trade(trade: dict):
             logger.info(f"الصفقة {trade_id} لم تعد مفتوحة — إيقاف المراقبة")
             _peak_price_usd.pop(trade_id, None)
             _entry_price_usd.pop(trade_id, None)
+            _free_ride_triggered.discard(trade_id)
+            _free_ride_recovered_sol.pop(trade_id, None)
             return
 
         # الطبقة 1: فحص on-chain قاطع (تلاعب تقني) → إغلاق طارئ فوري
         should_close, reason = await check_onchain_signals(trade)
         if should_close:
             logger.warning(f"إغلاق تلقائي (تلاعب تقني) للصفقة {trade_id}: {reason}")
-            await execute_emergency_sell(trade, reason)
+            recovered = _free_ride_recovered_sol.pop(trade_id, 0.0)
+            await execute_emergency_sell(trade, reason, extra_proceeds_sol=recovered)
             _peak_price_usd.pop(trade_id, None)
             _entry_price_usd.pop(trade_id, None)
+            _free_ride_triggered.discard(trade_id)
             return
+
+        # فحص الركوب المجاني (مرة واحدة فقط لكل صفقة): عند مضاعفة السعر لأول
+        # مرة، بيع جزئي فوري لاسترداد رأس المال — لا يُغلق الصفقة، فقط يُقلّص
+        # الكمية المتبقية ويُسجّل العائد لإضافته لاحقاً عند الإغلاق النهائي.
+        try:
+            await check_free_ride_trigger(trade)
+        except Exception as e:
+            logger.warning(f"تعذّر فحص الركوب المجاني للصفقة {trade_id}: {e}")
 
         # الطبقة 1.5: فحص السعر الفعلي (وقف خسارة متحرك/صارم) → بيع عادي مخطط
         try:
@@ -175,9 +215,11 @@ async def monitor_single_trade(trade: dict):
 
         if should_sell_price:
             logger.info(f"بيع مخطط (سعر) للصفقة {trade_id}: {price_reason}")
-            await execute_normal_sell(trade, price_reason)
+            recovered = _free_ride_recovered_sol.pop(trade_id, 0.0)
+            await execute_normal_sell(trade, price_reason, extra_proceeds_sol=recovered)
             _peak_price_usd.pop(trade_id, None)
             _entry_price_usd.pop(trade_id, None)
+            _free_ride_triggered.discard(trade_id)
             return
 
         # الطبقة 2: فحص دوري للمصادر الخارجية → تنبيه فقط، لا إغلاق
