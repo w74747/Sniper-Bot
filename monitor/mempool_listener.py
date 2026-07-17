@@ -341,6 +341,20 @@ async def fetch_token_metadata(pool_event: dict) -> TokenMetadata:
 
 
 async def process_new_pool_event(pool_event: dict):
+    """
+    إضافة "خفيفة" فورية لقائمة المراقبة — بدون أي استعلام RPC مكلف إطلاقاً.
+
+    إعادة هيكلة جذرية مهمة: كان هذا الكود سابقاً يُنفّذ فحصاً أمنياً كاملاً
+    (قراءة العقد + توزيع الحيازة عبر RPC) لكل عملة يكتشفها PumpPortal فوراً
+    — قبل حتى معرفة هل ستُظهر أي زخم إطلاقاً. بما أن الغالبية الساحقة من
+    عملات Pump.fun تموت فوراً بلا أي تداول حقيقي، كنا نُهدر ميزانية RPC
+    الثمينة (429 مستمر) على آلاف العملات لن تُشترى أبداً.
+
+    الترتيب الجديد: إضافة فورية بتكلفة صفرية (بيانات الحدث نفسها فقط، بدون
+    RPC) → المسار السريع يفحص الزخم أولاً (رخيص، DexScreener مُجمَّع) →
+    الفحص الأمني الكامل (RPC + GoPlus) يُنفَّذ فقط للعملات النادرة التي
+    أظهرت زخماً حقيقياً بالفعل. هذا يُخفّض استهلاك RPC بمقدار كبير جداً.
+    """
     dex = pool_event.get("dex", "").lower()
     if dex not in DEX_ALLOWLIST:
         return
@@ -366,33 +380,19 @@ async def process_new_pool_event(pool_event: dict):
         logger.debug(f"تجاهل {mint_address} — تم رصدها/التعامل معها من قبل")
         return
 
-    try:
-        meta = await fetch_token_metadata(pool_event)
-    except Exception as e:
-        logger.warning(f"تعذّر قراءة بيانات العقد لـ {pool_event.get('mint_address')}: {e}")
-        return
+    symbol = pool_event.get("symbol", "") or ""
 
-    onchain_result = run_all_onchain_filters(meta)
-    if not onchain_result.passed:
-        logger.info(f"رفض {meta.symbol}: {onchain_result.reason}")
-        await record_screening_result(
-            mint_address, meta.symbol, dex, "rejected", "onchain", onchain_result.reason
-        )
-        return
-
-    await record_screening_result(
-        mint_address, meta.symbol, dex, "added_to_watchlist", "onchain_passed",
-        f"اجتازت الفلاتر الآلية: {onchain_result.reason} — بانتظار فحص GoPlus/البيع لاحقاً"
-    )
-
+    # إضافة فورية بدون أي RPC — الفحص الأمني الكامل (mint authority، توزيع
+    # الحيازة، GoPlus) يحدث لاحقاً فقط عند تأكيد الزخم (راجع
+    # monitor/watchlist.py: run_onchain_filters_for_entry).
     await add_to_watchlist(WatchlistEntry(
-        mint_address=meta.mint_address,
-        symbol=meta.symbol,
+        mint_address=mint_address,
+        symbol=symbol,
         pool_address=pool_event.get("pool_address", ""),
         dex=dex,
         deployer_wallet=pool_event.get("deployer_wallet", ""),
         initial_filter_report=json.dumps({
-            "onchain": onchain_result.reason,
+            "onchain": "لم يُفحَص بعد — سيُفحَص عند تأكيد الزخم فقط (توفيراً لميزانية RPC)",
         }, ensure_ascii=False),
     ))
 
