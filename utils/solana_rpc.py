@@ -21,7 +21,7 @@ import time
 
 import aiohttp
 
-from config.settings import ALCHEMY_RPC_URL, PRIMARY_RPC_URL, RPC_ENDPOINTS
+from config.settings import PRIMARY_RPC_URL, RPC_ENDPOINTS
 
 logger = logging.getLogger("solana_rpc")
 
@@ -75,7 +75,7 @@ async def rpc_call(method: str, params: list, timeout: int = 20, max_retries: in
     HTTP دائمة (بدل إنشاء اتصال جديد كل مرة). يُسجّل نجاح/فشل كل مزود
     لتحسين ترتيب التناوب مستقبلاً.
     """
-    target_url = endpoint or ALCHEMY_RPC_URL
+    target_url = endpoint or PRIMARY_RPC_URL
     payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
     last_error = None
     session = await _get_session()
@@ -221,8 +221,9 @@ async def get_token_largest_accounts(mint_address: str, max_retries: int = 6) ->
 
 async def get_signatures_for_address(address: str, limit: int = 50) -> list:
     """يرجع أحدث توقيعات المعاملات لعنوان معيّن (مفيد لسجل محفظة المطور)."""
+    endpoint = _ranked_endpoints(RPC_ENDPOINTS)[0] if RPC_ENDPOINTS else PRIMARY_RPC_URL
     result = await rpc_call(
-        "getSignaturesForAddress", [address, {"limit": limit}]
+        "getSignaturesForAddress", [address, {"limit": limit}], endpoint=endpoint
     )
     return result or []
 
@@ -241,7 +242,7 @@ async def get_signatures_for_address_polling(
     if until:
         config["until"] = until
 
-    endpoints = _ranked_endpoints(RPC_ENDPOINTS) or [ALCHEMY_RPC_URL]
+    endpoints = _ranked_endpoints(RPC_ENDPOINTS) or [PRIMARY_RPC_URL]
     last_error = None
 
     for attempt in range(max_retries):
@@ -279,7 +280,15 @@ async def get_signatures_for_address_polling(
 
 
 async def get_wallet_sol_balance(pubkey: str) -> float:
-    """يرجع رصيد SOL الفعلي الحالي للمحفظة (ديناميكياً، وليس رقماً ثابتاً)."""
-    result = await rpc_call("getBalance", [pubkey])
+    """
+    يرجع رصيد SOL الفعلي الحالي للمحفظة (ديناميكياً، وليس رقماً ثابتاً).
+
+    إصلاح حرج: كانت هذه الدالة تستخدم rpc_call بدون تحديد مزوّد، فتلجأ
+    افتراضياً لـAlchemy حصرياً — بمعزل تام عن نظام التناوب بين 5-6 مزودين.
+    إن كان مفتاح Alchemy غائباً أو معطّلاً (كما حدث فعلياً)، هذه الدالة
+    تفشل تماماً، مما يمنع حساب حجم أي صفقة ويوقف الشراء الحقيقي بالكامل
+    بصمت — بينما بقية النظام يبدو يعمل بشكل طبيعي ظاهرياً!
+    """
+    result = await _rpc_call_with_retry("getBalance", [pubkey])
     lamports = result.get("value", 0) if result else 0
     return lamports / 1_000_000_000
