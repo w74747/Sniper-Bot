@@ -218,6 +218,42 @@ async def get_cumulative_performance() -> dict:
     }
 
 
+async def get_monthly_performance() -> dict:
+    """
+    الأداء منذ بداية الشهر التقويمي الحالي فقط — يُصفَّر تلقائياً بمجرد بدء
+    شهر جديد (نحسب "بداية الشهر" ديناميكياً من الوقت الحالي في كل استدعاء،
+    بدل تخزين عداد يحتاج إعادة ضبط يدوية عرضة للخطأ أو النسيان).
+    """
+    import datetime
+    now = datetime.datetime.now(datetime.timezone.utc)
+    month_start = datetime.datetime(now.year, now.month, 1, tzinfo=datetime.timezone.utc)
+    month_start_ts = month_start.timestamp()
+
+    row = await pool.fetchrow("""
+        SELECT
+            COUNT(*) as total_closed,
+            SUM(CASE WHEN profit_loss_sol >= 0 THEN 1 ELSE 0 END) as winning_trades,
+            SUM(CASE WHEN profit_loss_sol < 0 THEN 1 ELSE 0 END) as losing_trades,
+            COALESCE(SUM(profit_loss_sol), 0) as total_profit_loss_sol
+        FROM trades
+        WHERE status IN ('closed_profit', 'closed_loss', 'closed_flagged')
+          AND exit_timestamp >= $1
+    """, month_start_ts)
+
+    total_closed = row["total_closed"] or 0
+    winning = row["winning_trades"] or 0
+    win_rate = (winning / total_closed * 100) if total_closed else 0.0
+
+    return {
+        "month_label": month_start.strftime("%Y-%m"),
+        "total_closed": total_closed,
+        "winning_trades": winning,
+        "losing_trades": row["losing_trades"] or 0,
+        "total_profit_loss_sol": row["total_profit_loss_sol"] or 0.0,
+        "win_rate_pct": win_rate,
+    }
+
+
 async def get_recent_logs(minutes: int = 60, level: str = None, limit: int = 500) -> list:
     """
     يرجع أحدث سجلات التطبيق مباشرة من قاعدة البيانات — بديل كامل عن الاعتماد
