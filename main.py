@@ -21,7 +21,7 @@ from db.log_handler import install_database_log_handler, flush_log_queue_loop
 from monitor.post_trade_monitor import run_monitor_loop
 from monitor.watchlist import run_watchlist_loop, run_fast_track_loop
 from monitor.pumpportal_listener import run_pumpportal_listener
-from monitor.ai_analyst import run_hourly_ai_analysis_loop
+from monitor.ai_analyst import run_hourly_ai_analysis_loop, run_code_diagnosis_loop
 
 # ملاحظة مهمة: run_mempool_listener (استقصاء Raydium عبر HTTP polling) أُزيل
 # من التشغيل بالكامل — Raydium من أكثر برامج Solana ازدحاماً (يشمل كل
@@ -65,7 +65,8 @@ async def main():
         asyncio.create_task(run_fast_track_loop()),    # المسار السريع (رصد الانطلاق الصاروخي)
         asyncio.create_task(run_monitor_loop()),       # مراقبة الصفقات المفتوحة (جاهز)
         asyncio.create_task(flush_log_queue_loop()),   # تفريغ طابور السجلات لقاعدة البيانات دورياً
-        asyncio.create_task(run_hourly_ai_analysis_loop()),  # تحليل ذكي دوري عبر DeepSeek كل ساعة
+        asyncio.create_task(run_hourly_ai_analysis_loop()),  # تحليل ذكي دوري عبر DeepSeek كل 30 دقيقة
+        asyncio.create_task(run_code_diagnosis_loop()),      # تشخيص كود تلقائي عبر DeepSeek كل ساعتين
     ]
     await asyncio.gather(*tasks)
 
