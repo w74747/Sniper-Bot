@@ -96,7 +96,10 @@ SOLANA_PUBLIC_WS_URL = "wss://api.mainnet-beta.solana.com"
 # المزود الأساسي المُستخدم فعلياً: Chainstack إن أُضيف في Railway، وإلا
 # Helius تلقائياً (بدون كسر أي شيء إن لم تُضِف Chainstack إطلاقاً). هذا هو
 # اللجوء الافتراضي الوحيد في كل الكود الآن — بدل Alchemy سابقاً.
-PRIMARY_RPC_URL = CHAINSTACK_RPC_URL or HELIUS_RPC_URL
+# المزود الأساسي المُستخدم فعلياً: Helius أولاً (مدفوع الآن، موثوق وحصته
+# ضخمة)، ثم Chainstack كاحتياطي أخير فقط إن غاب Helius تماماً — عُكس
+# الترتيب بعد إثبات فشل Chainstack المتكرر (403) حتى على الاستعلامات الأساسية.
+PRIMARY_RPC_URL = HELIUS_RPC_URL or CHAINSTACK_RPC_URL
 PRIMARY_WS_URL = CHAINSTACK_WS_URL or HELIUS_WS_URL
 
 # حماية شاملة: كل مزوّد يُضاف لقائمة التناوب فقط إذا كانت بيانات اعتماده
@@ -123,10 +126,17 @@ WS_ENDPOINTS = [
 # على مزود معيّن (مثلاً 429)، المحاولة التالية تجرّب مزوداً مختلفاً تماماً
 # بدل الاصطدام بنفس القيد مرة أخرى. Solana العام دائماً آخر خيار (احتياطي أخير).
 # لا Alchemy، ولا dRPC (كلاهما مُزالان نهائياً من هذه القائمة).
+# ترتيب التناوب: Helius أولاً دائماً وبشكل صريح (بعد الترقية المدفوعة —
+# 10 مليون طلب/شهرياً، ولم يُستهلَك منها سوى نسبة ضئيلة جداً فعلياً).
+# Chainstack أُزيل نهائياً من هنا — ثبت فشله المتكرر (403) حتى على
+# الاستعلامات الأساسية (getAccountInfo)، على الأرجح لأن فريتيره/باقته
+# الحالية تحظر أكثر مما كنا نظن (سبق واكتشفنا حظر getTokenLargestAccounts
+# وgetSignaturesForAddress، ويبدو الحظر أوسع من ذلك الآن). نظام الترتيب
+# حسب الصحة لم يكن يتجنّبه بالسرعة الكافية، فحُذف يدوياً بدل الاعتماد على
+# التعلّم التلقائي البطيء نسبياً.
 RPC_ENDPOINTS = [
     url for url in [
-        CHAINSTACK_RPC_URL, _helius_usable, ANKR_RPC_URL,
-        _getblock_usable, SOLANA_PUBLIC_RPC_URL,
+        _helius_usable, ANKR_RPC_URL, _getblock_usable, SOLANA_PUBLIC_RPC_URL,
     ]
     if url
 ]
