@@ -18,12 +18,88 @@
 import asyncio
 import logging
 import time
+from typing import Optional
 
 import aiohttp
 
 from config.settings import PRIMARY_RPC_URL, RPC_ENDPOINTS
 
 logger = logging.getLogger("solana_rpc")
+
+# ── تتبّع استهلاك Helius الشهري (تراكمي في الذاكرة، يُصفَّر تلقائياً بتغيّر
+# الشهر التقويمي — بنفس منطق get_monthly_performance، بدون أي تصفير يدوي) ──
+# الهدف: عائد كل تكلفة يجب أن يُغطّي نفسه — نحتاج معرفة الاستهلاك الفعلي
+# بدقة كافية لتفادي مفاجأة نفاد الحصة، وليس فقط اكتشافها بعد فوات الأوان.
+import datetime as _datetime
+
+_helius_usage_month: str = ""
+_helius_usage_count: int = 0
+
+
+def _track_helius_usage(target_url: str):
+    """يُستدعى مع كل استدعاء RPC — يزيد العداد فقط إن كان الرابط لـHelius."""
+    global _helius_usage_month, _helius_usage_count
+    if "helius" not in target_url:
+        return
+    current_month = _datetime.datetime.now(_datetime.timezone.utc).strftime("%Y-%m")
+    if _helius_usage_month != current_month:
+        _helius_usage_month = current_month
+        _helius_usage_count = 0
+    _helius_usage_count += 1
+
+
+def get_helius_usage() -> tuple:
+    """يرجع (تسمية الشهر الحالي، عدد الاستدعاءات المُستهلَكة هذا الشهر)."""
+    return _helius_usage_month, _helius_usage_count
+
+
+HELIUS_MONTHLY_QUOTA = 10_000_000  # حصة الخطة المدفوعة الحالية
+_HELIUS_CRITICAL_FRACTION = 0.9    # عند 90% من الحصة، نخفّض أولويته تلقائياً في التناوب
+
+
+def check_helius_quota_pace() -> Optional[dict]:
+    """
+    يقارن نسبة الاستهلاك الفعلي بنسبة الوقت المنقضي من الشهر — إن كنا
+    نستهلك أسرع بكثير من اللازم لإتمام الشهر بأمان، يرجع تفاصيل التحذير
+    (يُستدعى دورياً من monitor/ai_analyst.py لإرسال تنبيه فوري عبر تيليجرام).
+
+    أيضاً: عند اقتراب خطر حقيقي (90%+ من الحصة)، يُخفّض أولوية Helius
+    تلقائياً في نظام التناوب (عبر معاقبة صحته) لصالح المزودين المجانيين
+    المتبقين — حماية تلقائية بدل انتظار تدخل يدوي بعد فوات الأوان.
+    """
+    month_label, used = get_helius_usage()
+    if not month_label or used == 0:
+        return None
+
+    now = _datetime.datetime.now(_datetime.timezone.utc)
+    import calendar
+    days_in_month = calendar.monthrange(now.year, now.month)[1]
+    elapsed_fraction = (now.day - 1 + now.hour / 24) / days_in_month
+    used_fraction = used / HELIUS_MONTHLY_QUOTA
+
+    if used_fraction >= _HELIUS_CRITICAL_FRACTION:
+        # خفض أولوية تلقائي: نُعاقب صحة Helius عمداً ليتراجع ترتيبه في
+        # التناوب لصالح المزودين المجانيين، دون حذفه بالكامل (يبقى احتياطياً).
+        for _ in range(3):
+            _record_failure(PRIMARY_RPC_URL if "helius" in PRIMARY_RPC_URL else "")
+        for ep in RPC_ENDPOINTS:
+            if "helius" in ep:
+                for _ in range(3):
+                    _record_failure(ep)
+
+    # تحذير فقط إن كانت الوتيرة أسرع بوضوح (30%+) من الوتيرة الآمنة، ولإدخال
+    # نسبة معقولة من الشهر (تفادي إنذارات كاذبة في الساعات الأولى القليلة)
+    if used_fraction > elapsed_fraction * 1.3 and used_fraction > 0.03:
+        projected_total = used / elapsed_fraction if elapsed_fraction > 0 else used
+        return {
+            "used": used,
+            "quota": HELIUS_MONTHLY_QUOTA,
+            "used_fraction": used_fraction,
+            "elapsed_fraction": elapsed_fraction,
+            "projected_total": projected_total,
+            "will_exceed": projected_total > HELIUS_MONTHLY_QUOTA,
+        }
+    return None
 
 # ── جلسة HTTP دائمة (Connection Pool) ──
 # تُنشأ مرة واحدة فقط وتُعاد استخدامها لكل الاستدعاءات — توفّر مصافحة
@@ -76,6 +152,7 @@ async def rpc_call(method: str, params: list, timeout: int = 20, max_retries: in
     لتحسين ترتيب التناوب مستقبلاً.
     """
     target_url = endpoint or PRIMARY_RPC_URL
+    _track_helius_usage(target_url)
     payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
     last_error = None
     session = await _get_session()
