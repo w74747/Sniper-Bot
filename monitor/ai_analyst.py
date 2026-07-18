@@ -128,11 +128,12 @@ async def send_hourly_ai_report():
 
 async def run_hourly_ai_analysis_loop():
     """
-    حلقة دائمة تُشغّل التحليل الذكي كل ساعة بالضبط. محمية بالكامل — أي
+    حلقة دائمة تُشغّل التحليل الذكي كل 30 دقيقة. محمية بالكامل — أي
     استثناء غير متوقع (فشل DeepSeek، خطأ قاعدة بيانات، إلخ) يُسجَّل ولا
     يُسقط الحلقة (نفس درس العطل الصامت الذي تعلمناه سابقاً في watchlist).
     """
-    HOURLY_SECONDS = 3600
+    HOURLY_SECONDS = 1800  # كل 30 دقيقة بدل ساعة كاملة — رؤية أسرع وأدق، خصوصاً
+                            # في الفترات الحرجة بعد إصلاحات كبيرة (التكلفة لا تزال زهيدة جداً)
 
     while True:
         await asyncio.sleep(HOURLY_SECONDS)
@@ -140,3 +141,98 @@ async def run_hourly_ai_analysis_loop():
             await send_hourly_ai_report()
         except Exception as e:
             logger.error(f"⚠️ خطأ غير متوقع في التحليل الذكي الدوري: {type(e).__name__}: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 1) تنبيه الأزمة الفورية — بدل انتظار الدورة الدورية (حتى 30 دقيقة)
+# ═══════════════════════════════════════════════════════════════════
+
+_recent_emergency_sells: list = []  # قائمة توقيتات آخر عمليات البيع الطارئ
+_CRISIS_WINDOW_SECONDS = 300         # نافذة 5 دقائق
+_CRISIS_THRESHOLD = 3                # 3 عمليات بيع طارئ خلال 5 دقائق = أزمة حقيقية
+_last_crisis_alert_time = 0.0
+_CRISIS_ALERT_COOLDOWN_SECONDS = 900  # لا نُكرر تنبيه الأزمة أكثر من مرة كل 15 دقيقة
+
+
+async def report_emergency_sell():
+    """
+    يُستدعى من trading/executor.py عند كل عملية بيع طارئ. إذا تجاوز عدد
+    عمليات البيع الطارئ خلال نافذة قصيرة حداً معيّناً، يُطلق تحليلاً فورياً
+    عبر DeepSeek بدل انتظار الدورة الدورية — يُقلّص وقت اكتشاف الأزمة من
+    "حتى 30 دقيقة" إلى ثوانٍ معدودة (مستوحى من الأزمة الحقيقية التي واجهناها:
+    بيع طارئ خاطئ متكرر بسبب فشل RPC تقني وليس احتيالاً حقيقياً).
+    """
+    import time
+    global _last_crisis_alert_time
+
+    now = time.time()
+    _recent_emergency_sells.append(now)
+    while _recent_emergency_sells and now - _recent_emergency_sells[0] > _CRISIS_WINDOW_SECONDS:
+        _recent_emergency_sells.pop(0)
+
+    if len(_recent_emergency_sells) < _CRISIS_THRESHOLD:
+        return
+    if now - _last_crisis_alert_time < _CRISIS_ALERT_COOLDOWN_SECONDS:
+        return  # تجنّب إغراق تيليجرام بتنبيهات متكررة لنفس الأزمة المستمرة
+
+    _last_crisis_alert_time = now
+    logger.warning(
+        f"🚨 {len(_recent_emergency_sells)} عمليات بيع طارئ خلال "
+        f"{_CRISIS_WINDOW_SECONDS}s — تفعيل تحليل أزمة فوري"
+    )
+    try:
+        summary = await analyze_and_summarize()
+        await send_telegram_message(
+            f"🚨 <b>تنبيه أزمة فوري (DeepSeek)</b>\n\n"
+            f"{len(_recent_emergency_sells)} عمليات بيع طارئ خلال آخر "
+            f"{_CRISIS_WINDOW_SECONDS // 60} دقائق — هذا أسرع بكثير من المعتاد.\n\n{summary}"
+        )
+    except Exception as e:
+        logger.error(f"فشل إرسال تنبيه الأزمة الفوري: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 2) مراجعة الصفقة بعد إغلاقها — تقييم سريع لجودة القرار
+# ═══════════════════════════════════════════════════════════════════
+
+async def review_closed_trade(symbol: str, entry_reason: str, exit_reason: str, profit_loss_sol: float) -> str:
+    """
+    يُرسل تفاصيل صفقة مغلقة (سبب الدخول، سبب الخروج، النتيجة) لـDeepSeek،
+    ويطلب حكماً موجزاً بجملة واحدة فقط: هل كان القرار سليماً بناءً على
+    المعطيات المتاحة وقتها؟ بناء سجل تراكمي لتحسين المنطق مستقبلاً.
+    """
+    if not DEEPSEEK_API_KEY:
+        return ""
+
+    result_word = "ربح" if profit_loss_sol >= 0 else "خسارة"
+    user_content = (
+        f"صفقة على عملة meme في Solana:\n"
+        f"سبب الدخول: {entry_reason[:400]}\n"
+        f"سبب الخروج: {exit_reason[:300]}\n"
+        f"النتيجة: {result_word} {abs(profit_loss_sol):.4f} SOL\n\n"
+        f"بجملة واحدة فقط (عربي): هل كان القرار سليماً بناءً على المعطيات "
+        f"المتاحة وقت اتخاذه (وليس بناءً على النتيجة النهائية فقط)؟"
+    )
+    payload = {
+        "model": "deepseek-chat",
+        "messages": [
+            {"role": "system", "content": "أنت محلّل مختصر جداً. رد بجملة واحدة فقط بالعربية، بلا مقدمات."},
+            {"role": "user", "content": user_content},
+        ],
+        "max_tokens": 120,
+        "temperature": 0.3,
+    }
+    headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{DEEPSEEK_API_BASE}/chat/completions", json=payload, headers=headers, timeout=15,
+            ) as resp:
+                if resp.status != 200:
+                    return ""
+                data = await resp.json()
+        return data["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        logger.debug(f"تعذّر مراجعة الصفقة عبر DeepSeek (غير حرج): {e}")
+        return ""
