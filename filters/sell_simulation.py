@@ -28,6 +28,11 @@ class SellSimulationResult:
     can_sell: bool
     effective_sell_tax_pct: float
     reason: str
+    technical_failure: bool = False  # True فقط عند فشل تقني (429/timeout/شبكة) — وليس
+                                      # اكتشافاً حقيقياً لعدم القدرة على البيع. حاسم للتمييز
+                                      # بين "ارفض العملة احتياطياً قبل الشراء" (fail-safe مناسب،
+                                      # تكلفته منخفضة) و"بِع صفقة قائمة بالفعل بذعر" (fail-safe
+                                      # هنا كارثي، يحوّل فشل API عادي إلى خسارة مالية حقيقية).
 
 
 async def simulate_sell(
@@ -60,6 +65,15 @@ async def simulate_sell(
             async with session.get(
                 JUPITER_QUOTE_ENDPOINT, params=params, headers=headers, timeout=10
             ) as resp:
+                if resp.status == 429:
+                    # فشل تقني صريح (حد معدل)، وليس اكتشافاً حقيقياً لعدم إمكانية
+                    # البيع — يجب عدم معاملته كـhoneypot مؤكَّد إطلاقاً.
+                    return SellSimulationResult(
+                        can_sell=False,
+                        effective_sell_tax_pct=0.0,
+                        reason="Jupiter رجع 429 (تجاوز حد المعدل) — فشل تقني وليس honeypot",
+                        technical_failure=True,
+                    )
                 if resp.status != 200:
                     return SellSimulationResult(
                         can_sell=False,
@@ -88,11 +102,15 @@ async def simulate_sell(
 
     except Exception as e:
         logger.error(f"فشلت محاكاة البيع لعملة {mint_address}: {e}")
-        # مبدأ fail-safe: أي فشل في المحاكاة نفسها = رفض العملة احتياطياً
+        # مبدأ fail-safe (قبل الشراء تحديداً): أي فشل في المحاكاة نفسها = رفض
+        # العملة احتياطياً. لكن هذا فشل تقني بحت (اتصال/مهلة)، وليس اكتشافاً
+        # حقيقياً — technical_failure=True يسمح لمراقبة ما بعد الشراء بتجاهله
+        # بأمان بدل بيع مركز حقيقي بذعر.
         return SellSimulationResult(
             can_sell=False,
             effective_sell_tax_pct=100.0,
             reason=f"تعذّر تنفيذ محاكاة البيع تقنياً: {e} — تم الرفض احتياطياً",
+            technical_failure=True,
         )
 
 
