@@ -70,6 +70,10 @@ class TokenMetadata:
     lp_burned_or_locked_pct: float = 0.0
     dev_wallet_pct: float = 0.0
     top_holder_pct_excluding_lp: float = 0.0
+    top10_holders_pct_excluding_lp: float = 0.0  # مجموع أعلى 10 حاملين (غير LP) مجتمعين —
+                                                   # مستوحى من عقلية الخبراء: قد يكون كل حامل
+                                                   # فردي ضمن الحد المسموح، لكن مجتمعين قادرين
+                                                   # على تنسيق بيع جماعي يُدمّر السعر فوراً.
     holder_data_available: bool = True  # False إذا تعذّرت قراءة التوزيع (مثل Token-2022)
 
     is_standard_spl_token: bool = True
@@ -170,6 +174,15 @@ def check_distribution(meta: TokenMetadata) -> FilterResult:
             False,
             f"أكبر محفظة (غير LP) تملك {meta.top_holder_pct_excluding_lp:.1f}% من العرض "
             f"(الحد الأقصى المسموح {FILTERS.max_single_holder_pct}%)",
+            "distribution_filter",
+        )
+
+    if meta.top10_holders_pct_excluding_lp > FILTERS.max_top10_holders_combined_pct:
+        return FilterResult(
+            False,
+            f"أعلى 10 حاملين (غير LP) يملكون {meta.top10_holders_pct_excluding_lp:.1f}% "
+            f"من العرض مجتمعين (الحد الأقصى المسموح {FILTERS.max_top10_holders_combined_pct}%) "
+            f"— خطر تنسيق بيع جماعي حتى لو كان كل حامل فردياً ضمن الحد المسموح",
             "distribution_filter",
         )
 
