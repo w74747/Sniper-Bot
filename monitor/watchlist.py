@@ -157,6 +157,10 @@ async def run_onchain_filters_for_entry(entry: dict) -> tuple[bool, str]:
         except Exception as e:
             logger.debug(f"تعذّر حساب ATA لـ bonding curve: {e}")
 
+    # نجمع كل النسب (غير LP) في قائمة أولاً، ثم نحسب منها: الحد الأقصى الفردي
+    # (كما كان سابقاً)، ومجموع أعلى 10 مجتمعين (فحص جديد — حماية من تنسيق بيع
+    # جماعي حتى لو كان كل حامل فردياً ضمن الحد المسموح بمفرده).
+    non_lp_holder_pcts = []
     for holder in largest_accounts:
         amount = float(holder.get("amount", 0))
         pct = (amount / total_supply) * 100 if total_supply else 0
@@ -165,7 +169,10 @@ async def run_onchain_filters_for_entry(entry: dict) -> tuple[bool, str]:
             continue
         if address == deployer_wallet:
             dev_wallet_pct = max(dev_wallet_pct, pct)
-        top_holder_pct_excluding_lp = max(top_holder_pct_excluding_lp, pct)
+        non_lp_holder_pcts.append(pct)
+
+    top_holder_pct_excluding_lp = max(non_lp_holder_pcts, default=0.0)
+    top10_holders_pct_excluding_lp = sum(sorted(non_lp_holder_pcts, reverse=True)[:10])
 
     # حرق LP: Pump.fun يُستثنى دائماً (Bonding Curve، وليس LP تقليدي) — نفس
     # الاستثناء المُطبَّق في الفلتر الأصلي منذ اكتشاف هذه المشكلة سابقاً.
@@ -183,6 +190,7 @@ async def run_onchain_filters_for_entry(entry: dict) -> tuple[bool, str]:
         lp_burned_or_locked_pct=lp_burned_or_locked_pct,
         dev_wallet_pct=dev_wallet_pct,
         top_holder_pct_excluding_lp=top_holder_pct_excluding_lp,
+        top10_holders_pct_excluding_lp=top10_holders_pct_excluding_lp,
         holder_data_available=holder_data_available,
         is_standard_spl_token=True,
         has_transfer_restriction_hooks=False,
@@ -318,7 +326,7 @@ async def evaluate_watchlist_entry(entry: dict) -> tuple[str, str]:
     )
 
 
-async def evaluate_fast_track_entry(entry: dict, prefetched_momentum=None) -> Optional[tuple[str, str]]:
+async def evaluate_fast_track_entry(entry: dict, prefetched_momentum=None) -> Optional[tuple[str, str, float]]:
     """
     المسار السريع: يفحص هل العملة تُظهر "انطلاقاً صاروخياً" حقيقياً الآن،
     وإن كان كذلك، يشغّل نفس فحوصات الأمان — بدون انتظار 24-72 ساعة.
@@ -328,6 +336,10 @@ async def evaluate_fast_track_entry(entry: dict, prefetched_momentum=None) -> Op
     منفرد لكل عملة، وهو ما كان يتسبب فعلياً في تجاوز حد المعدل (429) لدى
     DexScreener بسبب كثرة الاستعلامات المتزامنة. إن لم تُمرَّر، يعود الكود
     للاستعلام الفردي القديم (احتياطي فقط، وليس المسار المُستخدَم فعلياً).
+
+    يرجع الآن (decision, reason, momentum_strength_pct) — العنصر الثالث
+    يُستخدَم لتحجيم حجم الصفقة بما يتناسب مع قوة إشارة الزخم الفعلية،
+    بدل حجم ثابت دائماً بغض النظر عن قوة الفرصة.
     """
     age_minutes = (time.time() - entry["added_at"]) / 60
     if age_minutes > FAST_TRACK.max_entry_age_minutes:
@@ -342,8 +354,10 @@ async def evaluate_fast_track_entry(entry: dict, prefetched_momentum=None) -> Op
 
     if prefetched_momentum is not None:
         momentum_ok, momentum_reason = evaluate_momentum(prefetched_momentum)
+        momentum_strength_pct = getattr(prefetched_momentum, "price_change_m5_pct", 0.0)
     else:
         momentum_ok, momentum_reason = await check_momentum(entry["mint_address"])
+        momentum_strength_pct = 0.0  # المسار الاحتياطي القديم لا يُرجع البيانات الخام
 
     if not momentum_ok:
         # خُفِّض من INFO إلى DEBUG: هذه الرسالة تتكرر آلاف المرات لكل عملة (كل
@@ -356,9 +370,11 @@ async def evaluate_fast_track_entry(entry: dict, prefetched_momentum=None) -> Op
 
     security_ok, security_reason = await run_security_checks(entry)
     if not security_ok:
-        return "rejected", f"زخم قوي لكن فشل الأمان: {security_reason}"
+        return "rejected", f"زخم قوي لكن فشل الأمان: {security_reason}", momentum_strength_pct
 
-    return "approved", f"🚀 مسار سريع: {momentum_reason} — {security_reason}"
+    return "approved", f"🚀 مسار سريع: {momentum_reason} — {security_reason}", momentum_strength_pct
+
+
 
 
 async def _get_current_capital_sol() -> float:
@@ -376,7 +392,33 @@ async def _get_current_capital_sol() -> float:
         return 0.0
 
 
-async def _execute_approval(entry: dict, reason: str, stage: str):
+def _momentum_size_multiplier(momentum_strength_pct: float) -> float:
+    """
+    يُحدد مضاعف حجم الصفقة بناءً على قوة إشارة الزخم الفعلية، بدل حجم ثابت
+    دائماً بغض النظر عن قوة الفرصة — مبدأ إدارة مخاطر: التركيز أكثر على
+    الإشارات عالية الثقة، وأقل على الإشارات التي بالكاد اجتازت الحد الأدنى.
+
+    زخم عند الحد الأدنى (5% تقريباً) → 0.6x الحجم القياسي.
+    زخم قوي جداً (100%+، كما رأينا فعلياً في صفقات حقيقية ناجحة) → 2.0x.
+    تحجيم خطي بينهما، بحد أقصى وأدنى صارمين لمنع أي تطرف غير محسوب.
+    """
+    MIN_PCT = 5.0
+    STRONG_PCT = 100.0
+    MIN_MULT = 0.6
+    MAX_MULT = 2.0
+
+    if momentum_strength_pct <= 0:
+        return 1.0  # لا بيانات زخم متاحة (مثلاً المسار العادي) — الحجم القياسي كما هو
+    if momentum_strength_pct <= MIN_PCT:
+        return MIN_MULT
+    if momentum_strength_pct >= STRONG_PCT:
+        return MAX_MULT
+
+    ratio = (momentum_strength_pct - MIN_PCT) / (STRONG_PCT - MIN_PCT)
+    return MIN_MULT + ratio * (MAX_MULT - MIN_MULT)
+
+
+async def _execute_approval(entry: dict, reason: str, stage: str, momentum_strength_pct: float = 0.0):
     """منطق تنفيذ الشراء المشترك بين المسار العادي والمسار السريع."""
     current_capital = await _get_current_capital_sol()
     if current_capital <= 0:
@@ -404,7 +446,14 @@ async def _execute_approval(entry: dict, reason: str, stage: str):
         entry["mint_address"], entry["symbol"], entry.get("dex", ""),
         "added_to_watchlist", stage, reason,
     )
-    capital_sol = current_capital * (EXIT_STRATEGY.max_capital_pct_per_trade / 100)
+    size_multiplier = _momentum_size_multiplier(momentum_strength_pct)
+    base_capital_sol = current_capital * (EXIT_STRATEGY.max_capital_pct_per_trade / 100)
+    capital_sol = base_capital_sol * size_multiplier
+    if size_multiplier != 1.0:
+        logger.info(
+            f"📏 [{entry['symbol']}] تحجيم الصفقة: مضاعف {size_multiplier:.2f}x "
+            f"(زخم {momentum_strength_pct:.1f}%) — {capital_sol:.4f} SOL بدل {base_capital_sol:.4f} SOL"
+        )
     await execute_buy(
         entry["mint_address"], entry["symbol"], entry["pool_address"],
         capital_sol=capital_sol,
@@ -488,9 +537,11 @@ async def run_fast_track_loop():
                     if result is None:
                         continue
 
-                    decision, reason = result
+                    decision, reason, momentum_strength_pct = result
                     if decision == "approved":
-                        await _execute_approval(entry, reason, "fast_track_approval")
+                        await _execute_approval(
+                            entry, reason, "fast_track_approval", momentum_strength_pct=momentum_strength_pct
+                        )
                     elif decision == "rejected":
                         logger.info(f"رفض المسار السريع لـ {entry['symbol']}: {reason}")
                         await record_screening_result(
