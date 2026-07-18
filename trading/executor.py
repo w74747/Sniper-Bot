@@ -15,6 +15,7 @@ from alerts import notifier
 from trading.swap_client import (
     build_and_send_swap, get_wallet_token_balance, load_wallet_keypair, SOL_MINT_ADDRESS,
 )
+from utils.solana_rpc import get_wallet_sol_balance
 from monitor.ai_analyst import report_emergency_sell, review_closed_trade
 
 logger = logging.getLogger("executor")
@@ -64,7 +65,18 @@ async def execute_buy(
     trade_id = await db.record_entry(trade)
 
     filter_summary = "\n".join(f"- {k}: {v}" for k, v in filter_report.items())
-    await notifier.alert_new_position_opened(symbol, mint_address, capital_sol, filter_summary)
+
+    current_balance = None
+    try:
+        wallet_pubkey = str(load_wallet_keypair().pubkey())
+        current_balance = await get_wallet_sol_balance(wallet_pubkey)
+    except Exception as e:
+        logger.debug(f"تعذّر جلب الرصيد الحالي لرسالة فتح الصفقة (غير حرج): {e}")
+
+    await notifier.alert_new_position_opened(
+        symbol, mint_address, capital_sol, filter_summary,
+        current_wallet_balance_sol=current_balance,
+    )
 
     logger.info(f"تم فتح صفقة جديدة #{trade_id} على {symbol}")
     return trade_id
@@ -175,10 +187,30 @@ async def _execute_sell(
         trade["id"], exit_price, total_proceeds_sol, reason, tx_hash, flagged=flagged
     )
     cumulative = await db.get_cumulative_performance()
+
+    # جلب الرصيد الحالي الفعلي + الأداء الشهري — fail-open كامل (لا نُفشل
+    # عملية الإغلاق نفسها إن تعذّر جلب أي منهما، فقط نُرسل الرسالة بدونهما).
+    current_balance = None
+    try:
+        wallet_pubkey = str(load_wallet_keypair().pubkey())
+        current_balance = await get_wallet_sol_balance(wallet_pubkey)
+    except Exception as e:
+        logger.debug(f"تعذّر جلب الرصيد الحالي للرسالة (غير حرج): {e}")
+
+    monthly_performance = None
+    try:
+        monthly_performance = await db.get_monthly_performance()
+    except Exception as e:
+        logger.debug(f"تعذّر جلب الأداء الشهري للرسالة (غير حرج): {e}")
+
     await notifier.alert_auto_closed(
         trade["symbol"], mint_address, reason,
         trade["capital_invested_sol"], total_proceeds_sol, profit_loss, tx_hash,
         cumulative=cumulative,
+        entry_timestamp=trade.get("entry_timestamp"),
+        exit_timestamp=time.time(),
+        current_wallet_balance_sol=current_balance,
+        monthly_performance=monthly_performance,
     )
 
     # مراجعة سريعة عبر DeepSeek بعد كل إغلاق — تُبنى سجلاً تراكمياً لتحسين
