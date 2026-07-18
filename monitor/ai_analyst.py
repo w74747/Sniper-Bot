@@ -283,6 +283,39 @@ async def run_code_diagnosis_loop():
 
 
 # ═══════════════════════════════════════════════════════════════════
+# 5) مراقبة وتيرة استهلاك حصة Helius الشهرية — تحذير فوري قبل النفاد
+#    المفاجئ، بدل اكتشافه بعد فوات الأوان (فلسفة: كل تكلفة يجب أن يُحسَب
+#    استهلاكها بدقة، لا مجرد اشتراك يُستنزَف بصمت بلا رقابة).
+# ═══════════════════════════════════════════════════════════════════
+
+async def run_helius_quota_watch_loop():
+    """حلقة خفيفة جداً (لا تستدعي أي API خارجي) تفحص وتيرة الاستهلاك كل 15 دقيقة."""
+    CHECK_INTERVAL_SECONDS = 900  # كل 15 دقيقة — فحص محلي بحت، لا تكلفة له إطلاقاً
+
+    while True:
+        await asyncio.sleep(CHECK_INTERVAL_SECONDS)
+        try:
+            from utils.solana_rpc import check_helius_quota_pace
+            warning = check_helius_quota_pace()
+            if warning:
+                status_word = "⚠️ سيتجاوز الحصة!" if warning["will_exceed"] else "ضمن الحصة (لكن أسرع من الوتيرة الآمنة)"
+                await send_telegram_message(
+                    f"⚠️ <b>تحذير: وتيرة استهلاك Helius أسرع من الآمن</b>\n\n"
+                    f"المُستهلَك حتى الآن: {warning['used']:,} من {warning['quota']:,} "
+                    f"({warning['used_fraction']*100:.1f}%)\n"
+                    f"الوقت المنقضي من الشهر: {warning['elapsed_fraction']*100:.1f}%\n"
+                    f"التوقع بنفس الوتيرة بنهاية الشهر: ~{warning['projected_total']:,.0f}\n"
+                    f"الحالة: {status_word}"
+                )
+                logger.warning(
+                    f"⚠️ تحذير وتيرة Helius: {warning['used']:,}/{warning['quota']:,} "
+                    f"({warning['used_fraction']*100:.1f}% مقابل {warning['elapsed_fraction']*100:.1f}% من الشهر)"
+                )
+        except Exception as e:
+            logger.error(f"⚠️ خطأ غير متوقع في مراقبة حصة Helius: {type(e).__name__}: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════════
 # 1) تنبيه الأزمة الفورية — بدل انتظار الدورة الدورية (حتى 30 دقيقة)
 # ═══════════════════════════════════════════════════════════════════
 
