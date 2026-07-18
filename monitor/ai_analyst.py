@@ -9,6 +9,7 @@
 """
 import asyncio
 import logging
+from typing import Optional
 
 import aiohttp
 
@@ -141,6 +142,144 @@ async def run_hourly_ai_analysis_loop():
             await send_hourly_ai_report()
         except Exception as e:
             logger.error(f"⚠️ خطأ غير متوقع في التحليل الذكي الدوري: {type(e).__name__}: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 4) تشخيص الأخطاء في الكود الفعلي — يربط الخطأ الأكثر تكراراً في اللوج
+#    بملفه المصدري، ويطلب من DeepSeek تحديد مكان الخلل واقتراح إصلاح
+# ═══════════════════════════════════════════════════════════════════
+
+# خريطة اسم اللوجر (logger_name كما يظهر في كل سطر لوج) → مسار الملف المصدري
+# المسؤول عنه. البوت يعمل من نفس المجلد الذي يحتوي كوده، فبإمكانه قراءة
+# ملفاته الخاصة مباشرة من القرص لتشخيص نفسه — دون أي أداة خارجية.
+_LOGGER_TO_FILE = {
+    "reputation": "filters/reputation.py",
+    "sell_simulation": "filters/sell_simulation.py",
+    "momentum": "filters/momentum.py",
+    "onchain_filters": "filters/onchain_filters.py",
+    "tatum_check": "filters/tatum_check.py",
+    "watchlist": "monitor/watchlist.py",
+    "mempool_listener": "monitor/mempool_listener.py",
+    "pumpportal_listener": "monitor/pumpportal_listener.py",
+    "post_trade_monitor": "monitor/post_trade_monitor.py",
+    "ai_analyst": "monitor/ai_analyst.py",
+    "swap_executor": "trading/executor.py",
+    "solana_rpc": "utils/solana_rpc.py",
+    "db_trades": "db/trades.py",
+    "db_pool": "db/pool.py",
+    "notifier": "alerts/notifier.py",
+}
+
+_DIAGNOSIS_WINDOW_MINUTES = 120     # نافذة أوسع من التقرير الدوري (ساعتان) — عيّنة أكبر لتشخيص أدق
+_DIAGNOSIS_MIN_ERROR_COUNT = 5      # لا داعي للتشخيص إن كانت الأخطاء قليلة جداً (أقل من 5 خلال ساعتين)
+
+
+async def diagnose_recurring_code_issue() -> Optional[str]:
+    """
+    يجد أكثر مصدر أخطاء (ERROR) تكراراً خلال آخر ساعتين، يقرأ كود ملفه
+    المصدري فعلياً من القرص، ويطلب من DeepSeek تشخيصاً محدداً: أين الخلل
+    المحتمل، ولماذا، وما الإصلاح المقترح — بدل الاكتفاء بوصف الأعراض
+    كما يفعل التقرير الدوري العادي.
+    """
+    if not DEEPSEEK_API_KEY:
+        return None
+
+    error_logs = await get_recent_logs(minutes=_DIAGNOSIS_WINDOW_MINUTES, level="ERROR", limit=200)
+    if len(error_logs) < _DIAGNOSIS_MIN_ERROR_COUNT:
+        return None  # لا يوجد نمط أخطاء متكرر يستحق تشخيصاً عميقاً الآن
+
+    # عدّ الأخطاء حسب logger_name لتحديد المصدر الأكثر تكراراً
+    counts: dict = {}
+    samples: dict = {}
+    for row in error_logs:
+        name = row["logger_name"]
+        counts[name] = counts.get(name, 0) + 1
+        samples.setdefault(name, []).append(row["message"])
+
+    top_logger = max(counts, key=counts.get)
+    top_count = counts[top_logger]
+    if top_count < _DIAGNOSIS_MIN_ERROR_COUNT:
+        return None
+
+    file_path = _LOGGER_TO_FILE.get(top_logger)
+    if not file_path:
+        logger.debug(f"لا يوجد ربط معروف بين اللوجر '{top_logger}' وملف مصدري")
+        return None
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            source_code = f.read()
+    except Exception as e:
+        logger.warning(f"تعذّر قراءة الملف المصدري {file_path} للتشخيص: {e}")
+        return None
+
+    error_samples_text = "\n".join(f"- {msg[:300]}" for msg in samples[top_logger][:15])
+
+    system_prompt = (
+        "أنت مهندس برمجيات خبير في Python وaiohttp وSolana. ستستلم كود ملف "
+        "بايثون فعلي من مشروع بوت تداول، بالإضافة إلى عيّنة من رسائل خطأ "
+        "حقيقية متكررة صدرت منه. حدّد بدقة (بالعربية): 1) أين يكمن الخلل "
+        "المحتمل تحديداً في الكود (اسم الدالة/رقم السطر التقريبي إن أمكن)، "
+        "2) لماذا يحدث هذا الخطأ بالتحديد بناءً على منطق الكود، 3) إصلاح "
+        "مقترح محدد وقصير. كن مختصراً ومباشراً (8 أسطر كحد أقصى)، لا تُعد "
+        "شرح الكود كله، فقط التشخيص والحل."
+    )
+    user_content = (
+        f"الملف: {file_path}\n"
+        f"عدد الأخطاء من هذا المصدر خلال آخر {_DIAGNOSIS_WINDOW_MINUTES} دقيقة: {top_count}\n\n"
+        f"عيّنة من رسائل الخطأ الفعلية:\n{error_samples_text}\n\n"
+        f"كود الملف الكامل:\n```python\n{source_code[:12000]}\n```"
+    )
+
+    payload = {
+        "model": "deepseek-chat",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ],
+        "max_tokens": 700,
+        "temperature": 0.2,
+    }
+    headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{DEEPSEEK_API_BASE}/chat/completions", json=payload, headers=headers, timeout=45,
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning(f"فشل تشخيص الكود عبر DeepSeek: status {resp.status}")
+                    return None
+                data = await resp.json()
+        diagnosis = data["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        logger.warning(f"تعذّر تشخيص الكود عبر DeepSeek: {e}")
+        return None
+
+    return (
+        f"🔬 <b>تشخيص كود تلقائي (DeepSeek)</b>\n\n"
+        f"الملف الأكثر إنتاجاً للأخطاء: <code>{file_path}</code>\n"
+        f"عدد الأخطاء ({_DIAGNOSIS_WINDOW_MINUTES//60} ساعة): {top_count}\n\n"
+        f"{diagnosis}"
+    )
+
+
+async def run_code_diagnosis_loop():
+    """
+    حلقة منفصلة عن التقرير الدوري العادي — تعمل كل ساعتين فقط (تشخيص الكود
+    أثقل تكلفة من التقرير الهيكلي العادي، فلا داعي لتكراره كل 30 دقيقة).
+    """
+    DIAGNOSIS_INTERVAL_SECONDS = 7200  # كل ساعتين
+
+    while True:
+        await asyncio.sleep(DIAGNOSIS_INTERVAL_SECONDS)
+        try:
+            diagnosis_text = await diagnose_recurring_code_issue()
+            if diagnosis_text:
+                await send_telegram_message(diagnosis_text)
+                logger.info("🔬 أُرسل تشخيص كود تلقائي جديد")
+        except Exception as e:
+            logger.error(f"⚠️ خطأ غير متوقع في حلقة تشخيص الكود: {type(e).__name__}: {e}")
 
 
 # ═══════════════════════════════════════════════════════════════════
