@@ -38,6 +38,13 @@ async def check_onchain_signals(trade: dict) -> tuple[bool, str]:
     """
     يفحص إشارات on-chain قاطعة على عقد العملة المفتوحة صفقتها، بمقارنة الحالة
     الحالية بالحالة المسجّلة عند الدخول (المخزنة في filter_report عند الشراء).
+
+    إصلاح حرج جداً: كان أي فشل تقني (429 من Helius/Jupiter، وهو متكرر جداً)
+    يُترجَم فوراً كـ"دليل احتيال قاطع"، فيُباع المركز بذعر — حتى لو كانت
+    الصفقة ممتازة وفي طريقها لتحقيق هدف الربح! هذا تسبب فعلياً في خسارة
+    رأس المال بمعدل كارثي (تآكل ~93% خلال ساعات) لأسباب لا علاقة لها
+    بجودة الصفقة إطلاقاً، بل بازدحام API عادي. الآن: فشل تقني بحت = تجاهل
+    هذه الدورة والمحاولة لاحقاً (fail-open)، وإغلاق طارئ فقط عند دليل حقيقي.
     """
     mint_address = trade["mint_address"]
 
@@ -45,13 +52,14 @@ async def check_onchain_signals(trade: dict) -> tuple[bool, str]:
         mint_data_b64 = await get_account_info_base64(mint_address)
         mint_info = parse_spl_mint_account(mint_data_b64)
     except Exception as e:
-        # فشل قراءة الحساب بالكامل قد يعني أن العقد أُغلق أو تعذّر الوصول إليه —
-        # هذا بحد ذاته مؤشر خطر يستحق الإغلاق الطارئ الفوري.
-        return True, f"تعذّر قراءة حالة العقد الحالية — مؤشر خطر: {e}"
+        # فشل تقني بحت (429/timeout/شبكة) — لا نبيع بناءً عليه إطلاقاً.
+        # سنحاول مجدداً في الدورة القادمة (خلال ثوانٍ قليلة).
+        logger.debug(f"تعذّر قراءة حالة العقد تقنياً لـ {trade['symbol']} (سيُعاد المحاولة): {e}")
+        return False, ""
 
     if POST_TRADE_MONITOR.auto_close_on_ownership_change and mint_info["mint_authority_active"]:
         # إذا كانت الصفقة دخلت أصلاً بشرط mint_authority=False، وأصبحت الآن True
-        # (نادر لكن ممكن عبر بعض حيل العقود)، هذا تلاعب خطير جداً.
+        # (نادر لكن ممكن عبر بعض حيل العقود)، هذا تلاعب خطير جداً وحقيقي 100%.
         return True, "تم رصد إعادة تفعيل صلاحية طباعة عملات جديدة (mint authority) بعد الشراء"
 
     # فحص محاكاة بيع جديدة — إذا أصبح البيع مستحيلاً أو الضريبة الفعلية مرتفعة فجأة
@@ -62,6 +70,13 @@ async def check_onchain_signals(trade: dict) -> tuple[bool, str]:
         pool_address="",
         test_amount_lamports=1_000_000,
     )
+
+    if sim_result.technical_failure:
+        # فشل تقني بحت (429 من Jupiter غالباً) — ليس دليلاً على honeypot.
+        # لا نبيع، ننتظر الدورة القادمة.
+        logger.debug(f"تعذّر تنفيذ محاكاة بيع تقنياً لـ {trade['symbol']} (سيُعاد المحاولة): {sim_result.reason}")
+        return False, ""
+
     if not sim_result.can_sell:
         return True, f"فشلت محاكاة بيع جديدة — قد يكون تحوّل إلى honeypot: {sim_result.reason}"
 
