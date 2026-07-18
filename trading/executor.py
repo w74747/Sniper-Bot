@@ -15,6 +15,7 @@ from alerts import notifier
 from trading.swap_client import (
     build_and_send_swap, get_wallet_token_balance, load_wallet_keypair, SOL_MINT_ADDRESS,
 )
+from monitor.ai_analyst import report_emergency_sell, review_closed_trade
 
 logger = logging.getLogger("executor")
 
@@ -179,6 +180,18 @@ async def _execute_sell(
         trade["capital_invested_sol"], total_proceeds_sol, profit_loss, tx_hash,
         cumulative=cumulative,
     )
+
+    # مراجعة سريعة عبر DeepSeek بعد كل إغلاق — تُبنى سجلاً تراكمياً لتحسين
+    # المنطق مستقبلاً. غير مُعطِّلة إطلاقاً (fail-open كامل، لا تُبطئ التنفيذ
+    # الفعلي — الصفقة أُغلقت بالفعل قبل استدعائها).
+    try:
+        entry_reason = trade.get("filter_report", "") or ""
+        verdict = await review_closed_trade(trade["symbol"], entry_reason, reason, profit_loss)
+        if verdict:
+            await notifier.send_telegram_message(f"🧠 <b>مراجعة سريعة</b> ({trade['symbol']}): {verdict}")
+    except Exception as e:
+        logger.debug(f"تعذّرت مراجعة الصفقة عبر DeepSeek (غير حرج): {e}")
+
     return profit_loss
 
 
@@ -196,10 +209,19 @@ async def execute_emergency_sell(trade: dict, reason: str, extra_proceeds_sol: f
     يستخدم انزلاق أعلى (emergency_slippage_pct) لضمان الخروج حتى لو بسعر أسوأ قليلاً.
     """
     logger.warning(f"تنفيذ بيع طارئ للصفقة #{trade['id']} — السبب: {reason}")
-    return await _execute_sell(
+    result = await _execute_sell(
         trade, reason, slippage_pct=EXIT_STRATEGY.emergency_slippage_pct, flagged=True,
         extra_proceeds_sol=extra_proceeds_sol,
     )
+    # تنبيه أزمة فوري: إن تكررت عمليات البيع الطارئ بمعدل غير طبيعي (3+ خلال
+    # 5 دقائق)، هذا غالباً يعني مشكلة تقنية (429 مثلاً) وليس صفقات سيئة فعلياً
+    # — نُطلق تحليلاً فورياً بدل انتظار الدورة الدورية (حتى 30 دقيقة).
+    try:
+        await report_emergency_sell()
+    except Exception as e:
+        logger.debug(f"تعذّر فحص/إرسال تنبيه الأزمة الفوري (غير حرج): {e}")
+    return result
+
 
 
 async def confirm_and_close_flagged_trade(trade_id: int, human_confirmed_reason: str):
