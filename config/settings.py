@@ -269,7 +269,10 @@ class MomentumSettings:
     min_buy_sell_ratio_m5: float = 1.2         # نسبة الشراء للبيع
     min_volume_m5_usd: float = 1000.0          # حد أدنى لحجم التداول
     min_unique_buys_m5: int = 6                # حد أدنى لعدد معاملات الشراء
-    min_liquidity_usd: float = 2000.0          # حد أدنى للسيولة — خط الأمان ضد التلاعب
+    min_liquidity_usd: float = 5000.0           # رُفِع من $2,000 — عملات بسيولة أقل من هذا
+                                                 # أثبتت عملياً انهياراً كارثياً (73-100%) خلال
+                                                 # دقائق قليلة فقط من الدخول (سيولة ضحلة جداً،
+                                                 # يكفي بائع واحد متوسط لتفريغها بالكامل)
 
 
 MOMENTUM = MomentumSettings()
