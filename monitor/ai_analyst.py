@@ -14,7 +14,10 @@ from typing import Optional
 import aiohttp
 
 from config.settings import DEEPSEEK_API_KEY, DEEPSEEK_API_BASE
-from db.trades import get_screening_stats, get_cumulative_performance, get_recent_logs, get_recent_closed_trades_detail
+from db.trades import (
+    get_screening_stats, get_cumulative_performance, get_recent_logs,
+    get_recent_closed_trades_detail, get_performance_by_strategy,
+)
 from alerts.notifier import send_telegram_message
 
 logger = logging.getLogger("ai_analyst")
@@ -54,6 +57,23 @@ async def _build_report_data() -> str:
     lines.append(f"نسبة الربح: {performance['win_rate_pct']:.1f}%")
     lines.append(f"صافي الربح/الخسارة: {performance['total_profit_loss_sol']:.4f} SOL")
 
+    # مقارنة أداء كل استراتيجية بمعزل عن الأخريات — هذا يجيب مباشرة على
+    # السؤال الأهم: "أي استراتيجية تعمل فعلاً؟" بدل الحكم على البوت ككتلة
+    # واحدة (momentum_chase = مطاردة الزخم السعري، holder_velocity = سرعة
+    # انضمام حاملين جدد، patient_organic = انتظار 24-72 ساعة + نمو عضوي).
+    strategy_perf = await get_performance_by_strategy()
+    if strategy_perf:
+        lines.append("")
+        lines.append("=== مقارنة أداء الاستراتيجيات (الأهم!) ===")
+        for s in strategy_perf:
+            lines.append(
+                f"  [{s['strategy']}] {s['total_closed']} صفقة | "
+                f"ربح: {s['winning_trades']} / خسارة: {s['losing_trades']} | "
+                f"نسبة نجاح: {s['win_rate_pct']:.1f}% | "
+                f"صافي: {s['total_profit_loss_sol']:+.4f} SOL | "
+                f"متوسط الصفقة: {s['avg_profit_loss_sol']:+.4f} SOL"
+            )
+
     # تفاصيل كل صفقة فردية — يسمح لـDeepSeek باكتشاف أنماط جودة حقيقية،
     # مثل فجوة منهجية بين ما توقعه سبب الخروج (مثلاً "الربح المُثبَّت ≈ X%")
     # والنتيجة الفعلية المُحقَّقة (profit_loss_pct) — وهو بالضبط ما كشف
@@ -89,7 +109,10 @@ async def analyze_and_summarize() -> str:
 
     system_prompt = (
         "أنت محلّل تقني لبوت تداول آلي على Solana (اكتشاف عملات meme جديدة، "
-        "فلترة أمان، شراء وبيع تلقائي). ستستلم بيانات هيكلية (إحصائيات + "
+        "فلترة أمان، شراء وبيع تلقائي باستخدام 3 استراتيجيات دخول مختلفة: "
+        "momentum_chase = مطاردة الزخم السعري، holder_velocity = سرعة "
+        "انضمام حاملين جدد، patient_organic = انتظار طويل + نمو عضوي). "
+        "ستستلم بيانات هيكلية (إحصائيات + مقارنة أداء كل استراتيجية + "
         "تفاصيل كل صفقة مُغلَقة + عيّنة أخطاء) عن آخر ساعة من التشغيل. "
         "قاعدة مهمة يجب الالتزام بها بدقة: كل صفقة في القائمة **نُفِّذ بيعها "
         "فعلياً بنجاح** (لها معاملة حقيقية مؤكَّدة على السلسلة) — حتى لو "
@@ -102,10 +125,12 @@ async def analyze_and_summarize() -> str:
         "(يذكر أحياناً 'الربح المُثبَّت ≈ X%') مع النتيجة الفعلية "
         "(profit_loss_pct) — إن وجدت فجوة كبيرة بينهما، هذا يستحق الذكر "
         "كمشكلة تقنية محتملة في مصدر السعر. اكتب تقريراً عربياً مختصراً "
-        "(٥-٨ أسطر كحد أقصى) يغطي: 1) هل الوضع صحي عموماً؟ 2) أهم مشكلة "
-        "تقنية واضحة إن وُجدت (اسم الخدمة/الخطأ تحديداً، أو فجوة السعر "
-        "المذكورة أعلاه إن وُجدت). 3) توصية عملية واحدة فقط إن لزم الأمر. "
-        "لا تُطل، ولا تُكرر الأرقام حرفياً، لخّص المعنى."
+        "(٦-٩ أسطر كحد أقصى) يغطي: 1) هل الوضع صحي عموماً؟ 2) أي استراتيجية "
+        "تُظهر أفضل أداء حتى الآن (إن وُجدت 5+ صفقات لكل واحدة على الأقل "
+        "للمقارنة)، وأيّها الأسوأ؟ 3) أهم مشكلة تقنية واضحة إن وُجدت (اسم "
+        "الخدمة/الخطأ تحديداً، أو فجوة السعر المذكورة أعلاه إن وُجدت). "
+        "4) توصية عملية واحدة فقط إن لزم الأمر. لا تُطل، ولا تُكرر الأرقام "
+        "حرفياً، لخّص المعنى."
     )
 
     payload = {
