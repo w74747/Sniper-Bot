@@ -29,10 +29,13 @@ async def execute_buy(
     pool_address: str,
     capital_sol: float,
     filter_report: dict,
+    strategy: str = "momentum_chase",
 ) -> int:
     """
     ينفّذ عملية الشراء بعد اجتياز كل الفلاتر (on-chain + reputation + sell simulation).
     يرجع trade_id بعد تسجيل الصفقة في قاعدة البيانات.
+    strategy: يُسجَّل مع الصفقة لمقارنة أداء استراتيجيات مختلفة (momentum_chase،
+    holder_velocity، patient_organic) بمعزل عن بعضها لاحقاً.
     """
     amount_lamports = int(capital_sol * LAMPORTS_PER_SOL)
 
@@ -61,6 +64,7 @@ async def execute_buy(
         entry_price=entry_price,
         filter_report=json.dumps(filter_report, ensure_ascii=False),
         tx_hash_entry=tx_hash,
+        strategy=strategy,
     )
     trade_id = await db.record_entry(trade)
 
