@@ -14,7 +14,7 @@ from typing import Optional
 import aiohttp
 
 from config.settings import DEEPSEEK_API_KEY, DEEPSEEK_API_BASE
-from db.trades import get_screening_stats, get_cumulative_performance, get_recent_logs
+from db.trades import get_screening_stats, get_cumulative_performance, get_recent_logs, get_recent_closed_trades_detail
 from alerts.notifier import send_telegram_message
 
 logger = logging.getLogger("ai_analyst")
@@ -30,6 +30,7 @@ async def _build_report_data() -> str:
     """
     stats = await get_screening_stats(hours=1)
     performance = await get_cumulative_performance()
+    recent_trades = await get_recent_closed_trades_detail(hours=ANALYSIS_WINDOW_MINUTES / 60)
 
     error_logs = await get_recent_logs(minutes=ANALYSIS_WINDOW_MINUTES, level="ERROR", limit=40)
     warning_logs = await get_recent_logs(minutes=ANALYSIS_WINDOW_MINUTES, level="WARNING", limit=30)
@@ -52,6 +53,19 @@ async def _build_report_data() -> str:
     lines.append(f"رابحة: {performance['winning_trades']} / خاسرة: {performance['losing_trades']}")
     lines.append(f"نسبة الربح: {performance['win_rate_pct']:.1f}%")
     lines.append(f"صافي الربح/الخسارة: {performance['total_profit_loss_sol']:.4f} SOL")
+
+    # تفاصيل كل صفقة فردية — يسمح لـDeepSeek باكتشاف أنماط جودة حقيقية،
+    # مثل فجوة منهجية بين ما توقعه سبب الخروج (مثلاً "الربح المُثبَّت ≈ X%")
+    # والنتيجة الفعلية المُحقَّقة (profit_loss_pct) — وهو بالضبط ما كشف
+    # سابقاً خللاً حقيقياً في مصدر السعر المُستخدَم لقرارات الخروج.
+    lines.append("")
+    lines.append(f"=== تفاصيل الصفقات المُغلَقة ({len(recent_trades)}) — قارن المتوقَّع بسبب الخروج مع profit_loss_pct الفعلي ===")
+    for t in recent_trades:
+        lines.append(
+            f"  [{t['symbol']}] مدة: {t['duration_minutes']:.0f}د | "
+            f"سبب الخروج: {t['exit_reason'][:120]} | "
+            f"النتيجة الفعلية: {t['profit_loss_pct']:+.1f}% ({t['profit_loss_sol']:+.4f} SOL)"
+        )
 
     lines.append("")
     lines.append(f"=== عيّنة أخطاء (ERROR) — {len(error_logs)} سطراً ===")
@@ -76,10 +90,16 @@ async def analyze_and_summarize() -> str:
     system_prompt = (
         "أنت محلّل تقني لبوت تداول آلي على Solana (اكتشاف عملات meme جديدة، "
         "فلترة أمان، شراء وبيع تلقائي). ستستلم بيانات هيكلية (إحصائيات + "
-        "عيّنة أخطاء) عن آخر ساعة من التشغيل. اكتب تقريراً عربياً مختصراً "
-        "(٥-٨ أسطر كحد أقصى) يغطي: 1) هل الوضع صحي عموماً؟ 2) أهم مشكلة "
-        "تقنية واضحة إن وُجدت (اسم الخدمة/الخطأ تحديداً). 3) توصية عملية "
-        "واحدة فقط إن لزم الأمر. لا تُطل، ولا تُكرر الأرقام حرفياً، لخّص المعنى."
+        "تفاصيل كل صفقة مُغلَقة + عيّنة أخطاء) عن آخر ساعة من التشغيل. "
+        "مهمة إضافية مهمة: قارن سبب الخروج المكتوب لكل صفقة (يذكر أحياناً "
+        "'الربح المُثبَّت ≈ X%') مع النتيجة الفعلية (profit_loss_pct) — إن "
+        "وجدت فجوة كبيرة ومتكررة بينهما (مثل توقع ربح لكنه خسارة فادحة "
+        "فعلياً)، اذكر هذا صراحة كمشكلة تقنية محتملة في مصدر بيانات السعر "
+        "المُستخدَم لقرار الخروج، وليس مجرد 'صفقة سيئة'. اكتب تقريراً عربياً "
+        "مختصراً (٥-٨ أسطر كحد أقصى) يغطي: 1) هل الوضع صحي عموماً؟ 2) أهم "
+        "مشكلة تقنية واضحة إن وُجدت (اسم الخدمة/الخطأ تحديداً، أو فجوة "
+        "السعر المذكورة أعلاه إن وُجدت). 3) توصية عملية واحدة فقط إن لزم "
+        "الأمر. لا تُطل، ولا تُكرر الأرقام حرفياً، لخّص المعنى."
     )
 
     payload = {
