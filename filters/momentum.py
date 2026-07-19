@@ -244,6 +244,13 @@ def evaluate_momentum(data: MomentumData) -> tuple[bool, str]:
             f"({MOMENTUM.min_price_change_m5_pct}%) خلال آخر 5 دقائق"
         )
 
+    if data.price_change_m5_pct > MOMENTUM.max_price_change_m5_pct:
+        return False, (
+            f"تغيّر السعر ({data.price_change_m5_pct:.1f}%) أعلى بكثير من السقف المعقول "
+            f"({MOMENTUM.max_price_change_m5_pct}%) — غالباً قمة انفجار مصطنعة على وشك "
+            f"الانهيار (Pump قبل Dump)، وليست فرصة حقيقية"
+        )
+
     if data.volume_m5_usd < MOMENTUM.min_volume_m5_usd:
         return False, (
             f"حجم التداول (${data.volume_m5_usd:,.0f}) أقل من الحد الأدنى "
