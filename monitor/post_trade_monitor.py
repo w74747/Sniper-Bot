@@ -325,8 +325,10 @@ async def run_post_restore_health_check():
                 test_amount_lamports=1_000_000,
             )
             sim_ok, sim_reason = evaluate_simulation_result(sim_result)
+            sim_technical_failure = sim_result.technical_failure
         except Exception as e:
             sim_ok, sim_reason = False, f"تعذّر فحص محاكاة البيع: {e}"
+            sim_technical_failure = True  # استثناء غير متوقع = فشل تقني، وليس اكتشافاً حقيقياً
 
         # إعادة تهيئة تتبع القمة فوراً من القيمة الحقيقية الآن — بدل الانتظار
         # لأول دورة فحص عادية (كل 5 ثوانٍ، فرق بسيط لكن نُفضّل الصراحة هنا)
@@ -343,12 +345,19 @@ async def run_post_restore_health_check():
         except Exception as e:
             price_status = f"تعذّر جلب القيمة الحالية: {e}"
 
+        # إصلاح حاسم: فشل تقني بحت (429 من Jupiter، وهو متكرر جداً عند فحص
+        # عدة صفقات دفعة واحدة) لا يعني honeypot — كان يُعرَض بعلامة "⚠️
+        # تحتاج انتباهاً" المُقلِقة رغم أن النص نفسه يقول "فشل تقني وليس
+        # honeypot"! الآن: تصنيف منفصل وواضح لهذه الحالة تحديداً.
         if sim_ok:
             status_icon = "✅"
             status_text = "طبيعية — لا يزال البيع ممكناً بشروط مقبولة"
+        elif sim_technical_failure:
+            status_icon = "ℹ️"
+            status_text = f"تعذّر التحقق تقنياً الآن (سيُعاد المحاولة تلقائياً لاحقاً): {sim_reason}"
         else:
             status_icon = "⚠️"
-            status_text = f"تحتاج انتباهاً: {sim_reason}"
+            status_text = f"تحتاج انتباهاً فعلياً: {sim_reason}"
 
         report_lines.append(
             f"{status_icon} <b>{symbol}</b>\n"
@@ -357,6 +366,11 @@ async def run_post_restore_health_check():
         )
 
         logger.info(f"🩺 [{symbol}] محاكاة بيع: {'ناجحة' if sim_ok else 'فشلت'} — {sim_reason}")
+
+        # تأخير بسيط بين كل صفقة وأخرى — فحص عدة صفقات فوراً وبسرعة (بدون أي
+        # تأخير) كان يُطلق حد معدل Jupiter بأنفسنا عند بدء التشغيل تحديداً
+        # (كل صفقة تستدعي Jupiter مرتين: محاكاة بيع + قيمة حقيقية).
+        await asyncio.sleep(1.5)
 
     report_lines.append(
         "\nملاحظة: وقف الخسارة المتحرك والصارم كلاهما يعملان بشكل طبيعي من "
