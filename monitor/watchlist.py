@@ -30,6 +30,7 @@ from filters.onchain_filters import TokenMetadata, run_all_onchain_filters, pars
 from utils.solana_rpc import (
     get_token_largest_accounts, rpc_call, get_wallet_sol_balance, get_account_info_base64,
 )
+from utils.solscan_client import get_token_holders_solscan
 
 logger = logging.getLogger("watchlist")
 
@@ -130,49 +131,79 @@ async def run_onchain_filters_for_entry(entry: dict) -> tuple[bool, str]:
     except Exception as e:
         return False, f"تعذّر قراءة بيانات العقد تقنياً: {e}"
 
-    try:
-        largest_accounts = await get_token_largest_accounts(mint_address)
-        holder_data_available = True
-    except Exception:
-        largest_accounts = []
-        holder_data_available = False
-
     total_supply = mint_info["supply"] or 1
-    dev_wallet_pct = 0.0
-    top_holder_pct_excluding_lp = 0.0
 
-    # لـ Pump.fun: نحسب عنوان ATA الخاص بحساب bonding curve (نفس العنوان الذي
-    # نستثنيه من حساب "أكبر حامل" — يملك تقريباً كل العرض عند الإطلاق بتصميم
-    # البروتوكول نفسه، وليس شبهة احتيال).
-    known_lp_token_accounts = set()
-    if dex == "pump.fun" and pool_address:
+    # نُجرّب Solscan أولاً (حصة منفصلة تماماً عن Helius، 10 مليون CU) — يُخفّف
+    # الضغط عن Helius في نقطة الفشل الأكثر تكراراً. عند فشله (لا مفتاح، 429،
+    # إلخ)، نتراجع تلقائياً لمصدر RPC الأصلي كاحتياطي.
+    solscan_result = await get_token_holders_solscan(mint_address)
+    if solscan_result["items"]:
+        holder_data_available = True
+        non_lp_holder_pcts = []
+        dev_wallet_pct = 0.0
+
+        known_lp_addresses_solscan = set()
+        if dex == "pump.fun" and pool_address:
+            try:
+                bonding_curve_pk = Pubkey.from_string(pool_address)
+                mint_pk = Pubkey.from_string(mint_address)
+                derived, _ = Pubkey.find_program_address(
+                    [bytes(bonding_curve_pk), bytes(_TOKEN_PROGRAM_ID), bytes(mint_pk)],
+                    _ASSOCIATED_TOKEN_PROGRAM_ID,
+                )
+                known_lp_addresses_solscan.add(str(derived))
+            except Exception as e:
+                logger.debug(f"تعذّر حساب ATA لـ bonding curve (مسار Solscan): {e}")
+
+        for item in solscan_result["items"]:
+            address = item["address"]
+            pct = item["percentage"]
+            if address in known_lp_addresses_solscan or address == pool_address:
+                continue
+            if address == deployer_wallet:
+                dev_wallet_pct = max(dev_wallet_pct, pct)
+            non_lp_holder_pcts.append(pct)
+
+        top_holder_pct_excluding_lp = max(non_lp_holder_pcts, default=0.0)
+        top10_holders_pct_excluding_lp = sum(sorted(non_lp_holder_pcts, reverse=True)[:10])
+        logger.debug(f"[{entry.get('symbol', '?')}] فحص التوزيع عبر Solscan (المصدر الأساسي) نجح")
+    else:
+        # احتياطي: نفس منطق RPC القديم بالكامل، بدون أي تغيير
         try:
-            bonding_curve_pk = Pubkey.from_string(pool_address)
-            mint_pk = Pubkey.from_string(mint_address)
-            derived, _ = Pubkey.find_program_address(
-                [bytes(bonding_curve_pk), bytes(_TOKEN_PROGRAM_ID), bytes(mint_pk)],
-                _ASSOCIATED_TOKEN_PROGRAM_ID,
-            )
-            known_lp_token_accounts.add(str(derived))
-        except Exception as e:
-            logger.debug(f"تعذّر حساب ATA لـ bonding curve: {e}")
+            largest_accounts = await get_token_largest_accounts(mint_address)
+            holder_data_available = True
+        except Exception:
+            largest_accounts = []
+            holder_data_available = False
 
-    # نجمع كل النسب (غير LP) في قائمة أولاً، ثم نحسب منها: الحد الأقصى الفردي
-    # (كما كان سابقاً)، ومجموع أعلى 10 مجتمعين (فحص جديد — حماية من تنسيق بيع
-    # جماعي حتى لو كان كل حامل فردياً ضمن الحد المسموح بمفرده).
-    non_lp_holder_pcts = []
-    for holder in largest_accounts:
-        amount = float(holder.get("amount", 0))
-        pct = (amount / total_supply) * 100 if total_supply else 0
-        address = holder.get("address", "")
-        if address in known_lp_token_accounts:
-            continue
-        if address == deployer_wallet:
-            dev_wallet_pct = max(dev_wallet_pct, pct)
-        non_lp_holder_pcts.append(pct)
+        dev_wallet_pct = 0.0
 
-    top_holder_pct_excluding_lp = max(non_lp_holder_pcts, default=0.0)
-    top10_holders_pct_excluding_lp = sum(sorted(non_lp_holder_pcts, reverse=True)[:10])
+        known_lp_token_accounts = set()
+        if dex == "pump.fun" and pool_address:
+            try:
+                bonding_curve_pk = Pubkey.from_string(pool_address)
+                mint_pk = Pubkey.from_string(mint_address)
+                derived, _ = Pubkey.find_program_address(
+                    [bytes(bonding_curve_pk), bytes(_TOKEN_PROGRAM_ID), bytes(mint_pk)],
+                    _ASSOCIATED_TOKEN_PROGRAM_ID,
+                )
+                known_lp_token_accounts.add(str(derived))
+            except Exception as e:
+                logger.debug(f"تعذّر حساب ATA لـ bonding curve: {e}")
+
+        non_lp_holder_pcts = []
+        for holder in largest_accounts:
+            amount = float(holder.get("amount", 0))
+            pct = (amount / total_supply) * 100 if total_supply else 0
+            address = holder.get("address", "")
+            if address in known_lp_token_accounts:
+                continue
+            if address == deployer_wallet:
+                dev_wallet_pct = max(dev_wallet_pct, pct)
+            non_lp_holder_pcts.append(pct)
+
+        top_holder_pct_excluding_lp = max(non_lp_holder_pcts, default=0.0)
+        top10_holders_pct_excluding_lp = sum(sorted(non_lp_holder_pcts, reverse=True)[:10])
 
     # حرق LP: Pump.fun يُستثنى دائماً (Bonding Curve، وليس LP تقليدي) — نفس
     # الاستثناء المُطبَّق في الفلتر الأصلي منذ اكتشاف هذه المشكلة سابقاً.
@@ -205,23 +236,28 @@ async def check_organic_growth(mint_address: str, holders_at_add: int) -> dict:
     """
     يفحص المؤشرات العضوية الحالية مقابل لحظة الإضافة للـ watchlist.
 
-    إصلاح جذري وحاسم: كان الكود سابقاً يضع current_holders = holders_at_add
-    عند أي فشل تقني في القراءة (429/403/إلخ، وهي متكررة جداً)، مما يجعل
-    holders_growth = 0 دائماً عند الفشل — وبما أن 0 أقل من الحد الأدنى
-    المطلوب دوماً، كانت العملة تبقى "قيد المراقبة" حتى 72 ساعة ثم **تُرفض
-    تلقائياً كـ"منتهية الصلاحية"** — حتى لو كان نموها الحقيقي ممتازاً فعلاً!
-    الفشل التقني في القياس كان يُترجَم صامتاً إلى "رفض نهائي بعد 72 ساعة"،
-    بدل "لم نتمكن من الحكم بعد". هذا الإصلاح يُميّز الحالتين بوضوح تام عبر
-    data_available، ليعرف الكود المستدعي ألا يحتسب الفشل التقني ضد العملة.
+    تحسين جديد: نُجرّب Solscan أولاً — يُرجع العدد الحقيقي الكامل للحاملين
+    (بدون قيد الـ20 حساباً الذي تفرضه RPC نفسها)، فيصبح فحص "النمو العضوي"
+    أدق بكثير (نمو حقيقي حتى لو تجاوز 20 حاملاً)، وأيضاً يُخفّف الضغط عن
+    Helius (حصة Solscan منفصلة تماماً).
+
+    إصلاح جذري سابق (لا يزال قائماً): فشل تقني في القياس (كلا المصدرين)
+    لا يُحتسَب كـ"نمو صفري" — بل "لم نتمكن من الحكم بعد" (data_available).
     """
-    try:
-        largest_accounts = await get_token_largest_accounts(mint_address, max_retries=6)
-        current_holders = sum(1 for h in largest_accounts if float(h.get("amount", 0)) > 0)
+    solscan_result = await get_token_holders_solscan(mint_address, limit=1)  # نحتاج فقط "total"
+    if solscan_result["total_holders"] is not None:
+        current_holders = solscan_result["total_holders"]
         data_available = True
-    except Exception as e:
-        logger.warning(f"تعذّر فحص النمو العضوي لـ {mint_address}: {e}")
-        current_holders = holders_at_add
-        data_available = False
+        logger.debug(f"فحص النمو العضوي لـ {mint_address} عبر Solscan نجح (المصدر الأساسي)")
+    else:
+        try:
+            largest_accounts = await get_token_largest_accounts(mint_address, max_retries=6)
+            current_holders = sum(1 for h in largest_accounts if float(h.get("amount", 0)) > 0)
+            data_available = True
+        except Exception as e:
+            logger.warning(f"تعذّر فحص النمو العضوي لـ {mint_address} (كلا المصدرين): {e}")
+            current_holders = holders_at_add
+            data_available = False
 
     holders_growth = current_holders - holders_at_add
 
