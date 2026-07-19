@@ -10,28 +10,67 @@
 """
 import asyncio
 import logging
+from typing import Optional
 
-from config.settings import POST_TRADE_MONITOR, EXIT_STRATEGY
+from config.settings import POST_TRADE_MONITOR, EXIT_STRATEGY, USE_DEVNET
 from db import trades as db
 from alerts import notifier
 from filters.onchain_filters import parse_spl_mint_account, KNOWN_BURN_ADDRESSES
 from filters.sell_simulation import simulate_sell, evaluate_simulation_result
-from filters.momentum import fetch_from_dexscreener
 from trading.executor import execute_emergency_sell, execute_normal_sell, execute_partial_sell
+from trading.swap_client import get_jupiter_quote, get_wallet_token_balance, load_wallet_keypair, SOL_MINT_ADDRESS
 from utils.solana_rpc import get_account_info_base64, get_token_largest_accounts
 
 logger = logging.getLogger("post_trade_monitor")
 
-# يتتبع أعلى سعر (USD) شوهد لكل صفقة منذ فتحها — يُستخدم لوقف الخسارة المتحرك.
-# مخزَّن في الذاكرة فقط (وليس قاعدة البيانات) لأنه بيانات مؤقتة تخص المراقبة
-# الحية فقط، وتُفقد بأمان عند إعادة تشغيل البوت (يُعاد بناؤها من أول فحص جديد).
-_peak_price_usd: dict = {}
-_entry_price_usd: dict = {}
+# يتتبع أعلى قيمة SOL "قابلة للتحقق فعلياً" (عبر عرض Jupiter الحقيقي، وليس
+# سعر DexScreener اللحظي) شوهدت لكل صفقة منذ فتحها — يُستخدم لوقف الخسارة
+# المتحرك. إصلاح جذري: DexScreener أثبت عملياً فجوات هائلة بين "السعر
+# المعروض" و"العائد الحقيقي عند البيع الفعلي" لعملات meme صغيرة السيولة
+# (رأينا فجوات من +24% متوقَّع إلى -83% فعلي في نفس الصفقة!) — عرض Jupiter
+# يعكس التنفيذ الحقيقي القابل للتحقق فوراً (بما فيه الانزلاق الفعلي).
+# مخزَّن في الذاكرة فقط، يُفقد بأمان عند إعادة التشغيل (يُعاد بناؤه من أول فحص).
+_peak_sol_value: dict = {}
 
 # تتبع "الركوب المجاني" — هل بِيع نصف الكمية بالفعل عند مضاعفة السعر؟ وكم
 # استُرِدَّ بالضبط (لإضافته لعائد البيع النهائي عند إغلاق الصفقة بالكامل).
 _free_ride_triggered: set = set()
 _free_ride_recovered_sol: dict = {}
+
+
+async def get_realizable_sol_value(trade: dict) -> Optional[float]:
+    """
+    يرجع القيمة الفعلية القابلة للتحقق فوراً بالـSOL لو بِعنا كامل الكمية
+    المتبقية الآن — عبر عرض Jupiter الحقيقي (يعكس التنفيذ الفعلي، بما فيه
+    الانزلاق الحقيقي)، بدل سعر DexScreener اللحظي الذي أثبتنا عدم موثوقيته.
+
+    يرجع None عند أي فشل تقني (429، رصيد صفري، DEVNET) — fail-open كامل،
+    لا نتخذ أي قرار خروج بناءً على بيانات غير مؤكدة.
+    """
+    if USE_DEVNET:
+        return None
+
+    mint_address = trade["mint_address"]
+    try:
+        keypair = load_wallet_keypair()
+        wallet_pubkey = str(keypair.pubkey())
+        token_balance = await get_wallet_token_balance(wallet_pubkey, mint_address)
+        if token_balance <= 0:
+            return None
+
+        quote = await get_jupiter_quote(
+            mint_address, SOL_MINT_ADDRESS, token_balance, slippage_bps=500
+        )
+        out_lamports = float(quote.get("outAmount", 0))
+        return out_lamports / 1_000_000_000
+    except Exception as e:
+        logger.debug(
+            f"تعذّر جلب القيمة القابلة للتحقق عبر Jupiter لـ {trade.get('symbol', '?')} "
+            f"(سيُعاد المحاولة، fail-open): {e}"
+        )
+        return None
+
+
 
 
 async def check_onchain_signals(trade: dict) -> tuple[bool, str]:
@@ -92,29 +131,29 @@ async def check_onchain_signals(trade: dict) -> tuple[bool, str]:
 
 async def check_free_ride_trigger(trade: dict) -> bool:
     """
-    يتحقق: هل وصل السعر لأول مرة لهدف "الركوب المجاني" (+100% افتراضياً)،
-    ولم يُفعَّل من قبل لهذه الصفقة؟ إن كان كذلك، ينفّذ بيعاً جزئياً فوراً
-    (50% افتراضياً) لاسترداد رأس المال، ويترك الباقي "بلا ضغط نفسي" يستمر
-    تحت مظلة وقف الخسارة المتحرك العادي — بدل الخروج الكامل المبكر الذي
-    كان يُلغي أي فرصة لربح كبير حقيقي (مستوحى من عقلية محترفي meme coins).
+    يتحقق: هل وصلت القيمة القابلة للتحقق (عبر Jupiter الحقيقي) لأول مرة
+    لهدف "الركوب المجاني" (+100% افتراضياً)، ولم يُفعَّل من قبل لهذه
+    الصفقة؟ إن كان كذلك، ينفّذ بيعاً جزئياً فوراً (50% افتراضياً) لاسترداد
+    رأس المال، ويترك الباقي "بلا ضغط نفسي" يستمر تحت مظلة وقف الخسارة
+    المتحرك العادي (مستوحى من عقلية محترفي meme coins).
     """
     trade_id = trade["id"]
     if trade_id in _free_ride_triggered:
         return False  # فُعِّل من قبل بالفعل — لا نُكرره
 
-    entry_price = _entry_price_usd.get(trade_id)
-    peak_price = _peak_price_usd.get(trade_id)
-    if entry_price is None or peak_price is None or entry_price <= 0:
+    entry_capital_sol = trade.get("capital_invested_sol") or 0
+    peak_sol = _peak_sol_value.get(trade_id)
+    if peak_sol is None or entry_capital_sol <= 0:
         return False
 
-    gain_pct = ((peak_price - entry_price) / entry_price) * 100
+    gain_pct = ((peak_sol - entry_capital_sol) / entry_capital_sol) * 100
     if gain_pct < EXIT_STRATEGY.free_ride_trigger_pct:
         return False
 
     _free_ride_triggered.add(trade_id)
     recovered = await execute_partial_sell(
         trade, EXIT_STRATEGY.free_ride_sell_fraction,
-        f"وصل السعر +{gain_pct:.1f}% (الهدف {EXIT_STRATEGY.free_ride_trigger_pct}%)",
+        f"وصلت القيمة الحقيقية +{gain_pct:.1f}% (الهدف {EXIT_STRATEGY.free_ride_trigger_pct}%)",
     )
     _free_ride_recovered_sol[trade_id] = recovered
     return True
@@ -122,50 +161,47 @@ async def check_free_ride_trigger(trade: dict) -> bool:
 
 async def check_price_based_signals(trade: dict) -> tuple[bool, str]:
     """
-    يفحص السعر الفعلي الحالي (عبر DexScreener) لتطبيق منطق الخروج:
+    يفحص القيمة الفعلية القابلة للتحقق حالياً (عبر عرض Jupiter الحقيقي —
+    وليس سعر DexScreener اللحظي، الذي أثبتنا عملياً فجوات هائلة بينه وبين
+    العائد الحقيقي عند البيع الفعلي لعملات meme صغيرة السيولة) لتطبيق
+    منطق الخروج:
 
     1. وقف خسارة متحرك (الآلية المستمرة الأساسية): خروج كامل عند انخفاض
-       trailing_stop_pct من أعلى قمة شوهدت — هذا يعمل من اللحظة الأولى
-       وحتى ارتفاعات ضخمة (لا حد أقصى للربح)، بدل الخروج المبكر القديم
-       الذي كان يُلغي أي فرصة لربح كبير حقيقي.
-    2. وقف خسارة صارم: انهيار مباشر من سعر الدخول بدون أي ربح سابق.
+       trailing_stop_pct من أعلى قيمة حقيقية شوهدت.
+    2. وقف خسارة صارم: انهيار مباشر من رأس المال المستثمر بدون أي ربح سابق.
 
-    ملاحظة: "الركوب المجاني" (بيع جزئي عند 2x) يُفحَص بشكل منفصل عبر
-    check_free_ride_trigger — قبل هذه الدالة في حلقة المراقبة الرئيسية.
+    ملاحظة: "الركوب المجاني" يُفحَص بشكل منفصل عبر check_free_ride_trigger
+    — قبل هذه الدالة في حلقة المراقبة الرئيسية.
     """
     trade_id = trade["id"]
-    mint_address = trade["mint_address"]
-
-    data = await fetch_from_dexscreener(mint_address)
-    if not data or not data.price_usd:
+    entry_capital_sol = trade.get("capital_invested_sol") or 0
+    if entry_capital_sol <= 0:
         return False, ""
 
-    current_price = data.price_usd
+    current_sol_value = await get_realizable_sol_value(trade)
+    if current_sol_value is None:
+        return False, ""  # فشل تقني (429/رصيد صفري) — لا قرار الآن، إعادة محاولة لاحقاً
 
-    if trade_id not in _entry_price_usd:
-        _entry_price_usd[trade_id] = current_price
-        _peak_price_usd[trade_id] = current_price
-        return False, ""
+    _peak_sol_value[trade_id] = max(_peak_sol_value.get(trade_id, current_sol_value), current_sol_value)
+    peak_sol = _peak_sol_value[trade_id]
 
-    entry_price = _entry_price_usd[trade_id]
-    _peak_price_usd[trade_id] = max(_peak_price_usd[trade_id], current_price)
-    peak_price = _peak_price_usd[trade_id]
-
-    # الحالة 1: وقف خسارة متحرك — الآلية المستمرة الأساسية، تعمل من أي ارتفاع مهما كان صغيراً أو كبيراً
-    if peak_price > entry_price:
-        drop_from_peak_pct = ((peak_price - current_price) / peak_price) * 100
+    # الحالة 1: وقف خسارة متحرك — الآلية المستمرة الأساسية
+    if peak_sol > entry_capital_sol:
+        drop_from_peak_pct = ((peak_sol - current_sol_value) / peak_sol) * 100
         if drop_from_peak_pct >= EXIT_STRATEGY.trailing_stop_pct:
-            gain_now_pct = ((current_price - entry_price) / entry_price) * 100
+            gain_now_pct = ((current_sol_value - entry_capital_sol) / entry_capital_sol) * 100
             return True, (
-                f"وقف خسارة متحرك: انخفض السعر {drop_from_peak_pct:.1f}% من أعلى قمة "
-                f"(الحد {EXIT_STRATEGY.trailing_stop_pct}%) — الربح المُثبَّت الآن ≈ {gain_now_pct:.1f}%"
+                f"وقف خسارة متحرك (قيمة حقيقية عبر Jupiter): انخفضت "
+                f"{drop_from_peak_pct:.1f}% من أعلى قمة (الحد {EXIT_STRATEGY.trailing_stop_pct}%) "
+                f"— الربح المُثبَّت الفعلي الآن ≈ {gain_now_pct:.1f}%"
             )
 
     # الحالة 2: انهيار مباشر بدون أي ارتفاع سابق — وقف خسارة صارم
-    drop_from_entry_pct = ((entry_price - current_price) / entry_price) * 100
+    drop_from_entry_pct = ((entry_capital_sol - current_sol_value) / entry_capital_sol) * 100
     if drop_from_entry_pct >= EXIT_STRATEGY.max_drawdown_from_entry_pct:
         return True, (
-            f"وقف خسارة صارم: انخفض السعر {drop_from_entry_pct:.1f}% من سعر الدخول مباشرة "
+            f"وقف خسارة صارم (قيمة حقيقية عبر Jupiter): انخفضت القيمة القابلة "
+            f"للتحقق {drop_from_entry_pct:.1f}% من رأس المال مباشرة "
             f"(الحد {EXIT_STRATEGY.max_drawdown_from_entry_pct}%) بدون أي ربح سابق يُثبَّت"
         )
 
@@ -196,8 +232,7 @@ async def monitor_single_trade(trade: dict):
         open_trades = await db.get_open_trades()
         if not any(t["id"] == trade_id for t in open_trades):
             logger.info(f"الصفقة {trade_id} لم تعد مفتوحة — إيقاف المراقبة")
-            _peak_price_usd.pop(trade_id, None)
-            _entry_price_usd.pop(trade_id, None)
+            _peak_sol_value.pop(trade_id, None)
             _free_ride_triggered.discard(trade_id)
             _free_ride_recovered_sol.pop(trade_id, None)
             return
@@ -208,8 +243,7 @@ async def monitor_single_trade(trade: dict):
             logger.warning(f"إغلاق تلقائي (تلاعب تقني) للصفقة {trade_id}: {reason}")
             recovered = _free_ride_recovered_sol.pop(trade_id, 0.0)
             await execute_emergency_sell(trade, reason, extra_proceeds_sol=recovered)
-            _peak_price_usd.pop(trade_id, None)
-            _entry_price_usd.pop(trade_id, None)
+            _peak_sol_value.pop(trade_id, None)
             _free_ride_triggered.discard(trade_id)
             return
 
@@ -232,8 +266,7 @@ async def monitor_single_trade(trade: dict):
             logger.info(f"بيع مخطط (سعر) للصفقة {trade_id}: {price_reason}")
             recovered = _free_ride_recovered_sol.pop(trade_id, 0.0)
             await execute_normal_sell(trade, price_reason, extra_proceeds_sol=recovered)
-            _peak_price_usd.pop(trade_id, None)
-            _entry_price_usd.pop(trade_id, None)
+            _peak_sol_value.pop(trade_id, None)
             _free_ride_triggered.discard(trade_id)
             return
 
@@ -259,10 +292,11 @@ async def run_post_restore_health_check():
     كود، انقطاع، إلخ). يراجع كل صفقة كانت مفتوحة قبل التوقف، ويتحقق:
 
     1. هل لا تزال قابلة للبيع فعلياً الآن؟ (إعادة تشغيل محاكاة البيع)
-    2. تذكير مهم: متابعة "أعلى قمة سعرية" لوقف الخسارة المتحرك محفوظة في
-       الذاكرة فقط (_peak_price_usd) وتُفقد عند أي إعادة تشغيل — هذا الفحص
-       يُعيد تهيئتها صراحة من السعر الحالي الآن (بدل الانتظار للفحص الدوري
-       العادي)، حتى لا تفوتنا حماية لحظات مهمة فور العودة للعمل.
+    2. تذكير مهم: متابعة "أعلى قيمة SOL حقيقية" لوقف الخسارة المتحرك محفوظة
+       في الذاكرة فقط (_peak_sol_value) وتُفقد عند أي إعادة تشغيل — هذا
+       الفحص يُعيد تهيئتها صراحة من القيمة الحقيقية الآن (عبر Jupiter، بدل
+       الانتظار للفحص الدوري العادي)، حتى لا تفوتنا حماية لحظات مهمة فور
+       العودة للعمل.
 
     يرسل تقريراً واحداً مجمّعاً عبر تيليجرام يلخّص النتيجة لكل صفقة.
     """
@@ -294,17 +328,20 @@ async def run_post_restore_health_check():
         except Exception as e:
             sim_ok, sim_reason = False, f"تعذّر فحص محاكاة البيع: {e}"
 
-        # إعادة تهيئة تتبع القمة السعرية فوراً من السعر الحالي — بدل الانتظار
+        # إعادة تهيئة تتبع القمة فوراً من القيمة الحقيقية الآن — بدل الانتظار
         # لأول دورة فحص عادية (كل 5 ثوانٍ، فرق بسيط لكن نُفضّل الصراحة هنا)
         price_status = "غير متوفر"
         try:
-            data = await fetch_from_dexscreener(mint_address)
-            if data and data.price_usd:
-                _entry_price_usd[trade_id] = data.price_usd
-                _peak_price_usd[trade_id] = data.price_usd
-                price_status = f"${data.price_usd:.8f} (تمت إعادة تهيئة تتبع القمة من هذه اللحظة)"
+            current_sol_value = await get_realizable_sol_value(trade)
+            if current_sol_value is not None:
+                _peak_sol_value[trade_id] = max(
+                    _peak_sol_value.get(trade_id, current_sol_value), current_sol_value
+                )
+                price_status = (
+                    f"{current_sol_value:.4f} SOL (تمت إعادة تهيئة تتبع القمة من هذه اللحظة)"
+                )
         except Exception as e:
-            price_status = f"تعذّر جلب السعر الحالي: {e}"
+            price_status = f"تعذّر جلب القيمة الحالية: {e}"
 
         if sim_ok:
             status_icon = "✅"
