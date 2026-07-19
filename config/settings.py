@@ -279,6 +279,22 @@ MOMENTUM = MomentumSettings()
 
 
 @dataclass
+class HolderVelocitySettings:
+    """
+    استراتيجية بديلة تماماً عن مطاردة السعر: تُطارد معدل انضمام حاملين
+    جدد حقيقيين لكل دقيقة منذ إنشاء العملة — إشارة أصعب على التلاعب بها
+    من ارتفاع سعري لحظي (قد يُصنعه بائع/مشترٍ واحد ضخم بسهولة)، لأن كل
+    حامل جديد يتطلب محفظة مختلفة فعلياً. تُستخدَم بالتوازي مع momentum_chase
+    لمقارنة أداء الاستراتيجيتين على أرض الواقع (مقترح المستخدم صراحة).
+    """
+    enabled: bool = True
+    min_holders_per_minute: float = 3.0  # حد أدنى: 3 حاملين جدد/دقيقة كمعدل مستمر
+
+
+HOLDER_VELOCITY = HolderVelocitySettings()
+
+
+@dataclass
 class FastTrackSettings:
     """
     إعدادات "المسار السريع" — دخول فوري متى ظهر زخم صاروخي حقيقي (momentum)
