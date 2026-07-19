@@ -192,6 +192,43 @@ async def record_alert(trade_id, alert_type, message, requires_human_confirmatio
     )
 
 
+async def get_recent_closed_trades_detail(hours: int = 1, limit: int = 30) -> list:
+    """
+    يرجع تفاصيل كل صفقة أُغلقت خلال الساعات الأخيرة — يُستخدَم لإعطاء
+    DeepSeek رؤية على مستوى الصفقة الفردية (سبب الدخول، سبب الخروج، الفارق
+    بين ما توقعه منطق الخروج والنتيجة الفعلية المُحقَّقة)، وليس فقط
+    إحصائيات مُجمَّعة — هذا يسمح باكتشاف أنماط جودة حقيقية (مثل فجوة سعرية
+    منهجية بين "المتوقَّع عند الخروج" و"الفعلي"، كما اكتُشف يدوياً سابقاً).
+    """
+    cutoff = time.time() - (hours * 3600)
+    rows = await pool.fetch("""
+        SELECT symbol, filter_report, close_reason, capital_invested_sol,
+               proceeds_sol, profit_loss_sol, entry_timestamp, exit_timestamp
+        FROM trades
+        WHERE status IN ('closed_profit', 'closed_loss', 'closed_flagged')
+          AND exit_timestamp >= $1
+        ORDER BY exit_timestamp DESC
+        LIMIT $2
+    """, cutoff, limit)
+
+    result = []
+    for row in rows:
+        capital = row["capital_invested_sol"] or 0
+        pl_pct = (row["profit_loss_sol"] / capital * 100) if capital else 0.0
+        duration_min = ((row["exit_timestamp"] or 0) - (row["entry_timestamp"] or 0)) / 60
+        result.append({
+            "symbol": row["symbol"],
+            "entry_reason": (row["filter_report"] or "")[:200],
+            "exit_reason": (row["close_reason"] or "")[:200],
+            "capital_sol": capital,
+            "proceeds_sol": row["proceeds_sol"] or 0,
+            "profit_loss_sol": row["profit_loss_sol"] or 0,
+            "profit_loss_pct": pl_pct,
+            "duration_minutes": duration_min,
+        })
+    return result
+
+
 async def get_cumulative_performance() -> dict:
     row = await pool.fetchrow("""
         SELECT
