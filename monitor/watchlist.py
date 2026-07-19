@@ -17,7 +17,7 @@ from typing import Optional
 
 from solders.pubkey import Pubkey
 
-from config.settings import WATCHLIST, EXIT_STRATEGY, FAST_TRACK, USE_DEVNET
+from config.settings import WATCHLIST, EXIT_STRATEGY, FAST_TRACK, USE_DEVNET, HOLDER_VELOCITY
 from db import pool
 from db.trades import record_screening_result
 from trading.executor import execute_buy
@@ -362,6 +362,52 @@ async def evaluate_watchlist_entry(entry: dict) -> tuple[str, str]:
     )
 
 
+async def evaluate_holder_velocity_entry(entry: dict) -> Optional[tuple[str, str, float]]:
+    """
+    استراتيجية بديلة تماماً عن مطاردة السعر (momentum_chase): بدل الاعتماد
+    على ارتفاع سعري لحظي (قد يُصنعه بائع/مشترٍ واحد ضخم بسهولة نسبياً)،
+    نطارد معدل انضمام حاملين حقيقيين جدد لكل دقيقة — إشارة أصعب على
+    التلاعب بها (تتطلب محافظ فعلية مختلفة، وليس رأس مال واحداً كافياً).
+
+    يُستخدَم بالتوازي مع momentum_chase على نفس العملات، لمقارنة أداء
+    الاستراتيجيتين فعلياً على أرض الواقع بدل الافتراض النظري.
+    """
+    if not HOLDER_VELOCITY.enabled:
+        return None
+
+    age_minutes = (time.time() - entry["added_at"]) / 60
+    if age_minutes > FAST_TRACK.max_entry_age_minutes:
+        return None
+
+    age_seconds = time.time() - entry["added_at"]
+    if age_seconds < FAST_TRACK.min_age_seconds_before_momentum_check:
+        return None
+
+    solscan_result = await get_token_holders_solscan(entry["mint_address"], limit=1)
+    total_holders = solscan_result["total_holders"]
+    if total_holders is None:
+        return None  # فشل تقني (لا مفتاح/429/إلخ) — لا قرار، fail-open كامل
+
+    holder_velocity = total_holders / age_minutes if age_minutes > 0 else 0
+    if holder_velocity < HOLDER_VELOCITY.min_holders_per_minute:
+        return None  # لا تُظهر هذه العملة زخماً كافياً بهذا المقياس تحديداً
+
+    security_ok, security_reason = await run_security_checks(entry)
+    if not security_ok:
+        return (
+            "rejected",
+            f"سرعة حاملين قوية ({holder_velocity:.1f}/دقيقة) لكن فشل الأمان: {security_reason}",
+            0.0,
+        )
+
+    return (
+        "approved",
+        f"⚡ استراتيجية سرعة الحاملين: {total_holders} حاملاً خلال "
+        f"{age_minutes:.1f} دقيقة ({holder_velocity:.1f} حامل/دقيقة) — {security_reason}",
+        holder_velocity,
+    )
+
+
 async def evaluate_fast_track_entry(entry: dict, prefetched_momentum=None) -> Optional[tuple[str, str, float]]:
     """
     المسار السريع: يفحص هل العملة تُظهر "انطلاقاً صاروخياً" حقيقياً الآن،
@@ -454,8 +500,12 @@ def _momentum_size_multiplier(momentum_strength_pct: float) -> float:
     return MIN_MULT + ratio * (MAX_MULT - MIN_MULT)
 
 
-async def _execute_approval(entry: dict, reason: str, stage: str, momentum_strength_pct: float = 0.0):
-    """منطق تنفيذ الشراء المشترك بين المسار العادي والمسار السريع."""
+async def _execute_approval(
+    entry: dict, reason: str, stage: str, momentum_strength_pct: float = 0.0,
+    strategy: str = "momentum_chase",
+):
+    """منطق تنفيذ الشراء المشترك بين كل الاستراتيجيات — strategy يُسجَّل مع الصفقة
+    لمقارنة أداء كل استراتيجية بمعزل عن الأخريات لاحقاً."""
     current_capital = await _get_current_capital_sol()
     if current_capital <= 0:
         logger.warning(
@@ -477,7 +527,7 @@ async def _execute_approval(entry: dict, reason: str, stage: str, momentum_stren
         return
     logger.info(f"🔍 [{entry['symbol']}] {tatum_reason}")
 
-    logger.info(f"موافقة على شراء {entry['symbol']} ({stage}): {reason}")
+    logger.info(f"موافقة على شراء {entry['symbol']} ({stage} / استراتيجية: {strategy}): {reason}")
     await record_screening_result(
         entry["mint_address"], entry["symbol"], entry.get("dex", ""),
         "added_to_watchlist", stage, reason,
@@ -494,6 +544,7 @@ async def _execute_approval(entry: dict, reason: str, stage: str, momentum_stren
         entry["mint_address"], entry["symbol"], entry["pool_address"],
         capital_sol=capital_sol,
         filter_report={"decision": reason, "stage": stage, "tatum_confirmation": tatum_reason},
+        strategy=strategy,
     )
     await _update_watchlist_status(entry["id"], "approved")
 
@@ -511,7 +562,9 @@ async def run_watchlist_loop():
                     decision, reason = await evaluate_watchlist_entry(entry)
 
                     if decision == "approved":
-                        await _execute_approval(entry, reason, "watchlist_final_approval")
+                        await _execute_approval(
+                            entry, reason, "watchlist_final_approval", strategy="patient_organic"
+                        )
 
                     elif decision in ("rejected", "expired"):
                         logger.info(f"رفض/انتهاء {entry['symbol']}: {reason}")
@@ -570,20 +623,42 @@ async def run_fast_track_loop():
                     prefetched = momentum_by_mint.get(entry["mint_address"])
                     result = await evaluate_fast_track_entry(entry, prefetched_momentum=prefetched)
 
-                    if result is None:
-                        continue
+                    handled = False
+                    if result is not None:
+                        decision, reason, momentum_strength_pct = result
+                        if decision == "approved":
+                            await _execute_approval(
+                                entry, reason, "fast_track_approval",
+                                momentum_strength_pct=momentum_strength_pct,
+                                strategy="momentum_chase",
+                            )
+                            handled = True
+                        elif decision == "rejected":
+                            logger.info(f"رفض المسار السريع (زخم سعري) لـ {entry['symbol']}: {reason}")
+                            await record_screening_result(
+                                entry["mint_address"], entry["symbol"], entry.get("dex", ""),
+                                "rejected", "fast_track_rejected", reason,
+                            )
+                            handled = True
 
-                    decision, reason, momentum_strength_pct = result
-                    if decision == "approved":
-                        await _execute_approval(
-                            entry, reason, "fast_track_approval", momentum_strength_pct=momentum_strength_pct
-                        )
-                    elif decision == "rejected":
-                        logger.info(f"رفض المسار السريع لـ {entry['symbol']}: {reason}")
-                        await record_screening_result(
-                            entry["mint_address"], entry["symbol"], entry.get("dex", ""),
-                            "rejected", "fast_track_rejected", reason,
-                        )
+                    # استراتيجية مستقلة ثانية على نفس العملة (سرعة الحاملين) — تُجرَّب
+                    # فقط إن لم تُتخذ صفقة بالفعل عبر استراتيجية الزخم السعري، لمقارنة
+                    # أداء الاستراتيجيتين فعلياً على أرض الواقع (مقترح صريح من المستخدم).
+                    if not handled:
+                        hv_result = await evaluate_holder_velocity_entry(entry)
+                        if hv_result is not None:
+                            hv_decision, hv_reason, hv_velocity = hv_result
+                            if hv_decision == "approved":
+                                await _execute_approval(
+                                    entry, hv_reason, "fast_track_approval",
+                                    strategy="holder_velocity",
+                                )
+                            elif hv_decision == "rejected":
+                                logger.info(f"رفض المسار السريع (سرعة حاملين) لـ {entry['symbol']}: {hv_reason}")
+                                await record_screening_result(
+                                    entry["mint_address"], entry["symbol"], entry.get("dex", ""),
+                                    "rejected", "fast_track_rejected_holder_velocity", hv_reason,
+                                )
                 except Exception as e:
                     logger.error(
                         f"⚠️ خطأ غير متوقع في المسار السريع لـ {entry.get('symbol', '?')}: "
