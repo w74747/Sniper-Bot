@@ -28,6 +28,9 @@ async def get_token_holders_solscan(mint_address: str, limit: int = 20) -> dict:
     empty_result = {"total_holders": None, "items": []}
 
     if not SOLSCAN_API_KEY:
+        # تشخيص مؤقت (INFO بدل الصمت التام): يجب أن نرى بوضوح إن كان المفتاح
+        # غائباً فعلاً من متغيرات البيئة — بدل استنتاج ذلك من صفر استخدام فقط.
+        logger.info("⚠️ SOLSCAN_API_KEY غير موجود في متغيرات البيئة — Solscan معطَّل، التراجع لـRPC دائماً")
         return empty_result
 
     headers = {"token": SOLSCAN_API_KEY}
@@ -40,18 +43,24 @@ async def get_token_holders_solscan(mint_address: str, limit: int = 20) -> dict:
             ) as resp:
                 if resp.status != 200:
                     text = await resp.text()
-                    logger.debug(f"Solscan رجع status {resp.status} لـ {mint_address}: {text[:150]}")
+                    # تشخيص مؤقت (INFO بدل debug المخفي): نحتاج رؤية السبب
+                    # الحقيقي (401 مفتاح خاطئ؟ 403 ممنوع؟ 429 حد معدل؟) —
+                    # نفس الدرس المستفاد سابقاً مع تشخيص كل مزود آخر.
+                    logger.info(f"📉 Solscan رجع status {resp.status} لـ {mint_address}: {text[:200]}")
                     return empty_result
                 data = await resp.json()
     except Exception as e:
-        logger.debug(f"تعذّر الاتصال بـSolscan لـ {mint_address}: {e}")
+        logger.info(f"📉 تعذّر الاتصال بـSolscan لـ {mint_address}: {type(e).__name__}: {e}")
         return empty_result
 
     if not data.get("success"):
+        logger.info(f"📉 Solscan رجع success=false لـ {mint_address}: {str(data)[:200]}")
         return empty_result
 
     payload = data.get("data") or {}
     items = payload.get("items", [])
+
+    logger.info(f"✅ Solscan نجح لـ {mint_address}: {payload.get('total')} حامل إجمالي")
 
     return {
         "total_holders": payload.get("total"),
