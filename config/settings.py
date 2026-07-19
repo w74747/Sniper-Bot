@@ -86,6 +86,14 @@ TATUM_SOLANA_RPC_URL = "https://solana-mainnet.gateway.tatum.io/"
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
 DEEPSEEK_API_BASE = "https://api.deepseek.com"
 
+# Solscan Pro API: مصدر بديل ومستقل تماماً لفحص توزيع حاملي العملة —
+# بديل getTokenLargestAccounts (RPC)، بحصة منفصلة تماماً عن Helius (10
+# مليون CU شهرياً مجاناً)، ويُخفّف الضغط عن Helius في نقطة الفشل الأكثر
+# تكراراً (فحص النمو العضوي). ميزة إضافية: يُرجع العدد الحقيقي الكامل
+# للحاملين (بدون قيد الـ20 حساباً الذي تفرضه RPC نفسها).
+SOLSCAN_API_KEY = os.getenv("SOLSCAN_API_KEY", "").strip()
+SOLSCAN_API_BASE = "https://pro-api.solscan.io/v2.0"
+
 # Solana العام: مزوّد Solana Foundation الرسمي، مجاني تماماً وبدون أي تسجيل أو
 # مفتاح — لكن حدوده صارمة جداً ووثوقيته متذبذبة (مصمم للطوارئ/الاختبار وليس
 # الاستخدام المكثف). نضعه كخيار احتياطي أخير في نهاية قائمة التناوب فقط،
