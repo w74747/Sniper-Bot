@@ -36,8 +36,10 @@ async def init_db():
             close_reason TEXT,
             filter_report TEXT,
             tx_hash_entry TEXT,
-            tx_hash_exit TEXT
+            tx_hash_exit TEXT,
+            strategy TEXT DEFAULT 'momentum_chase'
         );
+        ALTER TABLE trades ADD COLUMN IF NOT EXISTS strategy TEXT DEFAULT 'momentum_chase';
         CREATE TABLE IF NOT EXISTS alerts (
             id SERIAL PRIMARY KEY,
             trade_id INTEGER REFERENCES trades(id),
@@ -145,6 +147,7 @@ class TradeRecord:
     tx_hash_entry: str
     entry_timestamp: float = None
     status: str = "open"
+    strategy: str = "momentum_chase"  # يُستخدَم لمقارنة أداء استراتيجيات مختلفة بمعزل عن بعضها
 
     def __post_init__(self):
         if self.entry_timestamp is None:
@@ -155,11 +158,11 @@ async def record_entry(trade: TradeRecord) -> int:
     row = await pool.fetchrow(
         """INSERT INTO trades
            (mint_address, symbol, entry_timestamp, capital_invested_sol,
-            entry_price, status, filter_report, tx_hash_entry)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id""",
+            entry_price, status, filter_report, tx_hash_entry, strategy)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id""",
         trade.mint_address, trade.symbol, trade.entry_timestamp,
         trade.capital_invested_sol, trade.entry_price, trade.status,
-        trade.filter_report, trade.tx_hash_entry,
+        trade.filter_report, trade.tx_hash_entry, trade.strategy,
     )
     return row["id"]
 
@@ -225,6 +228,41 @@ async def get_recent_closed_trades_detail(hours: int = 1, limit: int = 30) -> li
             "profit_loss_sol": row["profit_loss_sol"] or 0,
             "profit_loss_pct": pl_pct,
             "duration_minutes": duration_min,
+        })
+    return result
+
+
+async def get_performance_by_strategy() -> list:
+    """
+    يرجع أداء كل استراتيجية بمعزل تام عن الأخريات — الأداة الوحيدة الحقيقية
+    لمعرفة "أي استراتيجية تعمل فعلاً"، بدل الحكم على البوت ككتلة واحدة.
+    """
+    rows = await pool.fetch("""
+        SELECT
+            strategy,
+            COUNT(*) as total_closed,
+            SUM(CASE WHEN profit_loss_sol >= 0 THEN 1 ELSE 0 END) as winning_trades,
+            SUM(CASE WHEN profit_loss_sol < 0 THEN 1 ELSE 0 END) as losing_trades,
+            COALESCE(SUM(profit_loss_sol), 0) as total_profit_loss_sol,
+            COALESCE(AVG(profit_loss_sol), 0) as avg_profit_loss_sol
+        FROM trades
+        WHERE status IN ('closed_profit', 'closed_loss', 'closed_flagged')
+        GROUP BY strategy
+        ORDER BY total_profit_loss_sol DESC
+    """)
+
+    result = []
+    for row in rows:
+        total = row["total_closed"] or 0
+        winning = row["winning_trades"] or 0
+        result.append({
+            "strategy": row["strategy"] or "غير مُصنَّفة",
+            "total_closed": total,
+            "winning_trades": winning,
+            "losing_trades": row["losing_trades"] or 0,
+            "win_rate_pct": (winning / total * 100) if total else 0.0,
+            "total_profit_loss_sol": row["total_profit_loss_sol"] or 0.0,
+            "avg_profit_loss_sol": row["avg_profit_loss_sol"] or 0.0,
         })
     return result
 
