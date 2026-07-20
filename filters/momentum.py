@@ -37,6 +37,7 @@ class MomentumData:
     buys_m5: int
     sells_m5: int
     liquidity_usd: float
+    market_cap_usd: float = 0.0  # للاستراتيجية الجديدة "قرب التخرج" (graduation_proximity)
 
     @property
     def buy_sell_ratio_m5(self) -> float:
@@ -103,6 +104,7 @@ async def fetch_momentum_batch(mint_addresses: list, chain: str = "solana") -> d
                     buys_m5=int(txns_m5.get("buys", 0) or 0),
                     sells_m5=int(txns_m5.get("sells", 0) or 0),
                     liquidity_usd=float((pair.get("liquidity") or {}).get("usd", 0) or 0),
+                    market_cap_usd=float(pair.get("marketCap") or pair.get("fdv") or 0),
                 )
             except (TypeError, ValueError):
                 continue
