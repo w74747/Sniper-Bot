@@ -231,4 +231,378 @@ async def dashboard_page():
     return HTML_PAGE
 
 
-HTML_PAGE = open(os.path.join(os.path.dirname(__file__), "index.html"), "r", encoding="utf-8").read()
+HTML_PAGE = """<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>لوحة أداء البوت</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0A0E17;
+    --surface: #131826;
+    --surface-2: #1A2032;
+    --border: #232B3D;
+    --text: #EDEFF4;
+    --text-dim: #8B93A7;
+    --amber: #E8A33D;
+    --amber-dim: #7A5A26;
+    --green: #3ECF8E;
+    --red: #F0625A;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'IBM Plex Sans Arabic', sans-serif;
+    min-height: 100vh;
+  }
+  .mono { font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; }
+
+  header {
+    padding: 28px 32px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  header h1 {
+    font-size: 20px;
+    font-weight: 600;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .pulse-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 0 0 rgba(62,207,142,0.6);
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(62,207,142,0.5); }
+    70% { box-shadow: 0 0 0 8px rgba(62,207,142,0); }
+    100% { box-shadow: 0 0 0 0 rgba(62,207,142,0); }
+  }
+  header .last-update { color: var(--text-dim); font-size: 13px; }
+
+  main { padding: 28px 32px 60px; max-width: 1280px; margin: 0 auto; }
+
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 14px;
+    margin-bottom: 28px;
+  }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 18px 20px;
+    position: relative;
+    overflow: hidden;
+  }
+  .stat-card.highlight {
+    border-color: var(--amber-dim);
+    background: linear-gradient(160deg, var(--surface) 0%, #1C1508 140%);
+  }
+  .stat-label {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+    letter-spacing: 0.02em;
+  }
+  .stat-value {
+    font-size: 26px;
+    font-weight: 700;
+    line-height: 1.1;
+  }
+  .stat-value.amber { color: var(--amber); }
+  .stat-value.pos { color: var(--green); }
+  .stat-value.neg { color: var(--red); }
+  .stat-sub { font-size: 12px; color: var(--text-dim); margin-top: 6px; }
+
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 18px;
+    padding: 14px 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  .controls label { font-size: 13px; color: var(--text-dim); }
+  .controls input[type=date] {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 7px 10px;
+    border-radius: 6px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+  }
+  .btn {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all 0.15s;
+  }
+  .btn:hover { border-color: var(--amber-dim); }
+  .btn.primary {
+    background: var(--amber);
+    color: #1A1200;
+    border-color: var(--amber);
+    font-weight: 600;
+  }
+  .btn.primary:hover { filter: brightness(1.1); }
+  .btn-group { display: flex; gap: 6px; margin-inline-start: auto; }
+  .btn.small { padding: 6px 12px; font-size: 12px; }
+  .btn.active { background: var(--amber-dim); border-color: var(--amber); }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    font-size: 13px;
+  }
+  thead th {
+    background: var(--surface-2);
+    color: var(--text-dim);
+    font-weight: 500;
+    text-align: right;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  tbody td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--surface-2); }
+  .pl-pos { color: var(--green); }
+  .pl-neg { color: var(--red); }
+  .badge {
+    display: inline-block;
+    padding: 2px 9px;
+    border-radius: 20px;
+    font-size: 11px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+  }
+  .badge.open { color: var(--amber); border-color: var(--amber-dim); }
+  .strategy-tag {
+    font-size: 11px;
+    color: var(--text-dim);
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .empty-state {
+    text-align: center;
+    padding: 50px 20px;
+    color: var(--text-dim);
+  }
+  .table-wrap { overflow-x: auto; }
+  footer { text-align: center; padding: 30px; color: var(--text-dim); font-size: 12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span class="pulse-dot"></span> لوحة أداء البوت</h1>
+  <div class="last-update mono" id="lastUpdate">—</div>
+</header>
+
+<main>
+  <div class="stats-grid">
+    <div class="stat-card highlight">
+      <div class="stat-label">صافي الربح/الخسارة (الفترة المحددة)</div>
+      <div class="stat-value mono amber" id="netPL">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">صافي الربح/الخسارة (كل الوقت)</div>
+      <div class="stat-value mono" id="lifetimePL">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">صفقات مفتوحة الآن</div>
+      <div class="stat-value mono" id="openTrades">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">صفقات مغلقة (الفترة)</div>
+      <div class="stat-value mono" id="closedTrades">—</div>
+      <div class="stat-sub" id="closedSub">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">نسبة الربح</div>
+      <div class="stat-value mono" id="winRate">—</div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <label>من</label>
+    <input type="date" id="dateFrom">
+    <label>إلى</label>
+    <input type="date" id="dateTo">
+    <button class="btn" onclick="applyFilter()">تطبيق</button>
+    <div class="btn-group">
+      <button class="btn small" onclick="quickRange(1)">اليوم</button>
+      <button class="btn small" onclick="quickRange(7)">7 أيام</button>
+      <button class="btn small" onclick="quickRange(30)">30 يوماً</button>
+      <button class="btn small" onclick="quickRange(0)">كل الوقت</button>
+      <button class="btn primary small" onclick="exportExcel()">⬇ تحميل Excel</button>
+    </div>
+  </div>
+
+  <div class="controls" style="padding: 8px 16px;">
+    <button class="btn small active" id="filterAll" onclick="setStatusFilter('all')">الكل</button>
+    <button class="btn small" id="filterOpen" onclick="setStatusFilter('open')">مفتوحة فقط</button>
+    <button class="btn small" id="filterClosed" onclick="setStatusFilter('closed')">مغلقة فقط</button>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>الرمز</th>
+          <th>الاستراتيجية</th>
+          <th>وقت الفتح</th>
+          <th>وقت الإغلاق</th>
+          <th>رأس المال</th>
+          <th>الربح/الخسارة</th>
+          <th>النسبة</th>
+          <th>الحالة</th>
+        </tr>
+      </thead>
+      <tbody id="tradesBody">
+        <tr><td colspan="8" class="empty-state">جارٍ التحميل...</td></tr>
+      </tbody>
+    </table>
+  </div>
+</main>
+
+<footer>لوحة قراءة فقط — لا تُعدّل أي بيانات في البوت</footer>
+
+<script>
+let statusFilter = 'all';
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleString('ar-SA', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+function qs() {
+  const from = document.getElementById('dateFrom').value;
+  const to = document.getElementById('dateTo').value;
+  let params = [];
+  if (from) params.push('date_from=' + from);
+  if (to) params.push('date_to=' + to);
+  return params.length ? '?' + params.join('&') : '';
+}
+
+function quickRange(days) {
+  const to = new Date();
+  document.getElementById('dateTo').value = to.toISOString().slice(0, 10);
+  if (days === 0) {
+    document.getElementById('dateFrom').value = '';
+  } else {
+    const from = new Date();
+    from.setDate(from.getDate() - days);
+    document.getElementById('dateFrom').value = from.toISOString().slice(0, 10);
+  }
+  applyFilter();
+}
+
+function setStatusFilter(s) {
+  statusFilter = s;
+  ['All', 'Open', 'Closed'].forEach(x => document.getElementById('filter' + x).classList.remove('active'));
+  document.getElementById('filter' + s.charAt(0).toUpperCase() + s.slice(1)).classList.add('active');
+  loadTrades();
+}
+
+async function applyFilter() {
+  await Promise.all([loadStats(), loadTrades()]);
+}
+
+async function loadStats() {
+  const res = await fetch('/api/stats' + qs());
+  const d = await res.json();
+
+  const netEl = document.getElementById('netPL');
+  netEl.textContent = (d.net_profit_loss_sol >= 0 ? '+' : '') + d.net_profit_loss_sol.toFixed(4) + ' SOL';
+  netEl.className = 'stat-value mono ' + (d.net_profit_loss_sol >= 0 ? 'pos' : 'neg');
+
+  const lifeEl = document.getElementById('lifetimePL');
+  lifeEl.textContent = (d.lifetime_profit_loss_sol >= 0 ? '+' : '') + d.lifetime_profit_loss_sol.toFixed(4) + ' SOL';
+  lifeEl.className = 'stat-value mono ' + (d.lifetime_profit_loss_sol >= 0 ? 'pos' : 'neg');
+
+  document.getElementById('openTrades').textContent = d.open_trades;
+  document.getElementById('closedTrades').textContent = d.closed_trades;
+  document.getElementById('closedSub').textContent = d.winning_trades + ' رابحة / ' + d.losing_trades + ' خاسرة';
+  document.getElementById('winRate').textContent = d.win_rate_pct + '%';
+
+  document.getElementById('lastUpdate').textContent = 'آخر تحديث: ' + new Date().toLocaleTimeString('ar-SA');
+}
+
+async function loadTrades() {
+  const res = await fetch('/api/trades' + qs() + (qs() ? '&' : '?') + 'status=' + statusFilter);
+  const d = await res.json();
+  const body = document.getElementById('tradesBody');
+
+  if (!d.trades.length) {
+    body.innerHTML = '<tr><td colspan="8" class="empty-state">لا توجد صفقات ضمن هذه الفترة</td></tr>';
+    return;
+  }
+
+  body.innerHTML = d.trades.map(t => {
+    const isOpen = t.status === 'open';
+    const plClass = t.profit_loss_sol == null ? '' : (t.profit_loss_sol >= 0 ? 'pl-pos' : 'pl-neg');
+    const plText = t.profit_loss_sol == null ? '—' : (t.profit_loss_sol >= 0 ? '+' : '') + t.profit_loss_sol.toFixed(4);
+    const pctText = t.profit_loss_pct == null ? '—' : (t.profit_loss_pct >= 0 ? '+' : '') + t.profit_loss_pct.toFixed(1) + '%';
+    const statusBadge = isOpen
+      ? '<span class="badge open">مفتوحة</span>'
+      : '<span class="badge">' + (t.close_reason ? t.close_reason.slice(0, 30) : 'مغلقة') + '</span>';
+
+    return `<tr>
+      <td><strong>${t.symbol || '?'}</strong></td>
+      <td><span class="strategy-tag">${t.strategy}</span></td>
+      <td class="mono">${fmtDate(t.entry_time)}</td>
+      <td class="mono">${fmtDate(t.exit_time)}</td>
+      <td class="mono">${t.capital_sol ? t.capital_sol.toFixed(4) : '—'}</td>
+      <td class="mono ${plClass}">${plText}</td>
+      <td class="mono ${plClass}">${pctText}</td>
+      <td>${statusBadge}</td>
+    </tr>`;
+  }).join('');
+}
+
+function exportExcel() {
+  window.location.href = '/api/export' + qs();
+}
+
+applyFilter();
+setInterval(applyFilter, 30000); // تحديث تلقائي كل 30 ثانية
+</script>
+
+</body>
+</html>
+"""
