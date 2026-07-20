@@ -714,6 +714,13 @@ async def run_fast_track_loop():
                 try:
                     prefetched = momentum_by_mint.get(entry["mint_address"])
 
+                    # ملاحظة مهمة: handled يُصبح True فقط عند "موافقة فعلية" (شراء حقيقي)
+                    # — وليس عند الرفض. الرفض من استراتيجية واحدة لا يعني أبداً أن
+                    # العملة "غير صالحة" لاستراتيجية أخرى مختلفة تماماً في منطقها؛
+                    # هذا هو بالضبط الخلل الذي كان يمنع sustained_trend وgraduation_proximity
+                    # من الحصول على أي فرصة حقيقية للمقارنة (لاحظنا 1 صفقة فقط لكل
+                    # منهما بعد 106 صفقة إجمالاً — دليل قاطع أن الرفض كان يُغلق الباب خطأً).
+
                     # استراتيجية 1: مطاردة الزخم اللحظي (momentum_chase)
                     result = await evaluate_fast_track_entry(entry, prefetched_momentum=prefetched)
                     handled = False
@@ -732,7 +739,6 @@ async def run_fast_track_loop():
                                 entry["mint_address"], entry["symbol"], entry.get("dex", ""),
                                 "rejected", "fast_track_rejected", reason,
                             )
-                            handled = True
 
                     # استراتيجية 2: سرعة انضمام حاملين جدد (holder_velocity)
                     if not handled:
@@ -750,7 +756,6 @@ async def run_fast_track_loop():
                                     entry["mint_address"], entry["symbol"], entry.get("dex", ""),
                                     "rejected", "fast_track_rejected_holder_velocity", hv_reason,
                                 )
-                                handled = True
 
                     # استراتيجية 3: الزخم المستدام عبر قراءتين متتاليتين (sustained_trend)
                     if not handled:
@@ -769,7 +774,6 @@ async def run_fast_track_loop():
                                     entry["mint_address"], entry["symbol"], entry.get("dex", ""),
                                     "rejected", "fast_track_rejected_sustained_trend", st_reason,
                                 )
-                                handled = True
 
                     # استراتيجية 4: قرب عتبة التخرج (graduation_proximity)
                     if not handled:
