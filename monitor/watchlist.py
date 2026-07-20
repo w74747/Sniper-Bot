@@ -17,7 +17,10 @@ from typing import Optional
 
 from solders.pubkey import Pubkey
 
-from config.settings import WATCHLIST, EXIT_STRATEGY, FAST_TRACK, USE_DEVNET, HOLDER_VELOCITY
+from config.settings import (
+    WATCHLIST, EXIT_STRATEGY, FAST_TRACK, USE_DEVNET, HOLDER_VELOCITY,
+    SUSTAINED_TREND, GRADUATION_PROXIMITY,
+)
 from db import pool
 from db.trades import record_screening_result
 from trading.executor import execute_buy
@@ -408,6 +411,95 @@ async def evaluate_holder_velocity_entry(entry: dict) -> Optional[tuple[str, str
     )
 
 
+# تتبع القراءة السابقة لكل عملة — لازم لاستراتيجية "الزخم المستدام" (يحتاج
+# مقارنة قراءتين متتاليتين، وليس قراءة واحدة فقط).
+_previous_momentum_positive: dict = {}
+
+
+async def evaluate_sustained_trend_entry(entry: dict, prefetched_momentum=None) -> Optional[tuple[str, str, float]]:
+    """
+    استراتيجية أكثر تحفّظاً من momentum_chase: تتطلب زخماً إيجابياً في
+    قراءتين متتاليتين على الأقل (وليس ارتفاعاً لحظياً واحداً قد يكون قمة
+    انفجار مؤقتة على وشك الانهيار — كما رأينا فعلياً في صفقات حقيقية
+    خسرت 99-100% خلال دقائق من الدخول عند زخم لحظي واحد فقط).
+    """
+    if not SUSTAINED_TREND.enabled or prefetched_momentum is None:
+        return None
+
+    age_seconds = time.time() - entry["added_at"]
+    if age_seconds < FAST_TRACK.min_age_seconds_before_momentum_check:
+        return None
+    age_minutes = (time.time() - entry["added_at"]) / 60
+    if age_minutes > FAST_TRACK.max_entry_age_minutes:
+        return None
+
+    mint_address = entry["mint_address"]
+    current_positive = (
+        prefetched_momentum.price_change_m5_pct >= SUSTAINED_TREND.min_price_change_m5_pct
+    )
+    was_positive = _previous_momentum_positive.get(mint_address, False)
+    _previous_momentum_positive[mint_address] = current_positive
+
+    if not (current_positive and was_positive):
+        return None  # لم يثبت الزخم استمراره بعد عبر قراءتين متتاليتين
+
+    security_ok, security_reason = await run_security_checks(entry)
+    if not security_ok:
+        return (
+            "rejected",
+            f"زخم مستدام (قراءتان متتاليتان) لكن فشل الأمان: {security_reason}",
+            prefetched_momentum.price_change_m5_pct,
+        )
+
+    return (
+        "approved",
+        f"📈 استراتيجية الزخم المستدام: +{prefetched_momentum.price_change_m5_pct:.1f}% "
+        f"مؤكَّد عبر قراءتين متتاليتين — {security_reason}",
+        prefetched_momentum.price_change_m5_pct,
+    )
+
+
+async def evaluate_graduation_proximity_entry(entry: dict, prefetched_momentum=None) -> Optional[tuple[str, str, float]]:
+    """
+    استراتيجية مختلفة جذرياً: بدل عملة "جديدة تماماً وغير مؤكَّدة"، نستهدف
+    عملات اقتربت من عتبة "التخرج" التاريخية لـPump.fun (~$69,000) — تراكم
+    طلب حقيقي أثبت نجاتها من آلاف العملات الأخرى، بدل المراهنة على فوضى
+    الدقائق الأولى. فلسفة: "ادخل بعد إثبات الجدارة، لا أثناءها".
+    """
+    if not GRADUATION_PROXIMITY.enabled or prefetched_momentum is None:
+        return None
+    if (entry.get("dex") or "").lower() != "pump.fun":
+        return None  # مفهوم "التخرج" خاص بـPump.fun تحديداً
+
+    age_seconds = time.time() - entry["added_at"]
+    if age_seconds < FAST_TRACK.min_age_seconds_before_momentum_check:
+        return None
+    age_minutes = (time.time() - entry["added_at"]) / 60
+    if age_minutes > FAST_TRACK.max_entry_age_minutes:
+        return None
+
+    market_cap = prefetched_momentum.market_cap_usd
+    if not (GRADUATION_PROXIMITY.min_market_cap_usd <= market_cap <= GRADUATION_PROXIMITY.max_market_cap_usd):
+        return None
+    if prefetched_momentum.price_change_m5_pct < GRADUATION_PROXIMITY.min_price_change_m5_pct:
+        return None
+
+    security_ok, security_reason = await run_security_checks(entry)
+    if not security_ok:
+        return (
+            "rejected",
+            f"قرب التخرج (${market_cap:,.0f}) لكن فشل الأمان: {security_reason}",
+            0.0,
+        )
+
+    return (
+        "approved",
+        f"🎓 استراتيجية قرب التخرج: قيمة سوقية ${market_cap:,.0f} "
+        f"(قريبة من عتبة التخرج ~$69,000) — {security_reason}",
+        0.0,
+    )
+
+
 async def evaluate_fast_track_entry(entry: dict, prefetched_momentum=None) -> Optional[tuple[str, str, float]]:
     """
     المسار السريع: يفحص هل العملة تُظهر "انطلاقاً صاروخياً" حقيقياً الآن،
@@ -621,8 +713,9 @@ async def run_fast_track_loop():
                 entry = dict(row)
                 try:
                     prefetched = momentum_by_mint.get(entry["mint_address"])
-                    result = await evaluate_fast_track_entry(entry, prefetched_momentum=prefetched)
 
+                    # استراتيجية 1: مطاردة الزخم اللحظي (momentum_chase)
+                    result = await evaluate_fast_track_entry(entry, prefetched_momentum=prefetched)
                     handled = False
                     if result is not None:
                         decision, reason, momentum_strength_pct = result
@@ -641,23 +734,57 @@ async def run_fast_track_loop():
                             )
                             handled = True
 
-                    # استراتيجية مستقلة ثانية على نفس العملة (سرعة الحاملين) — تُجرَّب
-                    # فقط إن لم تُتخذ صفقة بالفعل عبر استراتيجية الزخم السعري، لمقارنة
-                    # أداء الاستراتيجيتين فعلياً على أرض الواقع (مقترح صريح من المستخدم).
+                    # استراتيجية 2: سرعة انضمام حاملين جدد (holder_velocity)
                     if not handled:
                         hv_result = await evaluate_holder_velocity_entry(entry)
                         if hv_result is not None:
-                            hv_decision, hv_reason, hv_velocity = hv_result
+                            hv_decision, hv_reason, _ = hv_result
                             if hv_decision == "approved":
                                 await _execute_approval(
-                                    entry, hv_reason, "fast_track_approval",
-                                    strategy="holder_velocity",
+                                    entry, hv_reason, "fast_track_approval", strategy="holder_velocity"
                                 )
+                                handled = True
                             elif hv_decision == "rejected":
                                 logger.info(f"رفض المسار السريع (سرعة حاملين) لـ {entry['symbol']}: {hv_reason}")
                                 await record_screening_result(
                                     entry["mint_address"], entry["symbol"], entry.get("dex", ""),
                                     "rejected", "fast_track_rejected_holder_velocity", hv_reason,
+                                )
+                                handled = True
+
+                    # استراتيجية 3: الزخم المستدام عبر قراءتين متتاليتين (sustained_trend)
+                    if not handled:
+                        st_result = await evaluate_sustained_trend_entry(entry, prefetched_momentum=prefetched)
+                        if st_result is not None:
+                            st_decision, st_reason, st_strength = st_result
+                            if st_decision == "approved":
+                                await _execute_approval(
+                                    entry, st_reason, "fast_track_approval",
+                                    momentum_strength_pct=st_strength, strategy="sustained_trend",
+                                )
+                                handled = True
+                            elif st_decision == "rejected":
+                                logger.info(f"رفض المسار السريع (زخم مستدام) لـ {entry['symbol']}: {st_reason}")
+                                await record_screening_result(
+                                    entry["mint_address"], entry["symbol"], entry.get("dex", ""),
+                                    "rejected", "fast_track_rejected_sustained_trend", st_reason,
+                                )
+                                handled = True
+
+                    # استراتيجية 4: قرب عتبة التخرج (graduation_proximity)
+                    if not handled:
+                        gp_result = await evaluate_graduation_proximity_entry(entry, prefetched_momentum=prefetched)
+                        if gp_result is not None:
+                            gp_decision, gp_reason, _ = gp_result
+                            if gp_decision == "approved":
+                                await _execute_approval(
+                                    entry, gp_reason, "fast_track_approval", strategy="graduation_proximity"
+                                )
+                            elif gp_decision == "rejected":
+                                logger.info(f"رفض المسار السريع (قرب التخرج) لـ {entry['symbol']}: {gp_reason}")
+                                await record_screening_result(
+                                    entry["mint_address"], entry["symbol"], entry.get("dex", ""),
+                                    "rejected", "fast_track_rejected_graduation", gp_reason,
                                 )
                 except Exception as e:
                     logger.error(
