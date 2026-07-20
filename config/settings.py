@@ -295,6 +295,40 @@ HOLDER_VELOCITY = HolderVelocitySettings()
 
 
 @dataclass
+class SustainedTrendSettings:
+    """
+    استراتيجية بديلة عن مطاردة الزخم اللحظي: تتطلب استمرارية الزخم عبر
+    دورتي فحص متتاليتين على الأقل (وليس ارتفاعاً لحظياً واحداً قد يكون
+    قمة انفجار مؤقتة). أكثر تحفّظاً من momentum_chase، تستهدف تجنّب
+    "شراء القمة تماماً قبل الانهيار" الذي رأيناه فعلياً في صفقات حقيقية.
+    """
+    enabled: bool = True
+    min_consecutive_positive_reads: int = 2  # زخم إيجابي في آخر قراءتين متتاليتين على الأقل
+    min_price_change_m5_pct: float = 5.0     # نفس الحد الأدنى، لكن يجب تكراره
+
+
+SUSTAINED_TREND = SustainedTrendSettings()
+
+
+@dataclass
+class GraduationProximitySettings:
+    """
+    استراتيجية مختلفة جذرياً: بدل شراء عملة "جديدة تماماً وغير مؤكَّدة"،
+    نستهدف عملات Pump.fun التي اقتربت من عتبة "التخرج" التاريخية لـRaydium
+    (~$69,000 قيمة سوقية) — وهذا يعني أنها نجت فعلياً من آلاف العملات
+    الأخرى واستمر عليها طلب حقيقي متراكم، بدل المراهنة على عملة لم تُثبت
+    نفسها بعد. فلسفة: "ادخل بعد إثبات الجدارة، لا أثناء الفوضى الأولى".
+    """
+    enabled: bool = True
+    min_market_cap_usd: float = 25000.0   # الحد الأدنى — دليل تراكم طلب حقيقي
+    max_market_cap_usd: float = 65000.0   # الحد الأقصى — قبل التخرج مباشرة (لا بعده، حيث تتغيّر الديناميكية)
+    min_price_change_m5_pct: float = 2.0  # حد أدنى متساهل جداً — الإشارة الأساسية هنا القيمة السوقية، وليس الزخم اللحظي
+
+
+GRADUATION_PROXIMITY = GraduationProximitySettings()
+
+
+@dataclass
 class FastTrackSettings:
     """
     إعدادات "المسار السريع" — دخول فوري متى ظهر زخم صاروخي حقيقي (momentum)
