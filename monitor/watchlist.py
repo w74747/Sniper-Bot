@@ -20,9 +20,13 @@ from solders.pubkey import Pubkey
 from config.settings import (
     WATCHLIST, EXIT_STRATEGY, FAST_TRACK, USE_DEVNET, HOLDER_VELOCITY,
     SUSTAINED_TREND, GRADUATION_PROXIMITY, RUGCHECK_MAX_SCORE, RUGCHECK_MAX_INSIDERS,
+    ESTABLISHED_LIQUID,
 )
 from db import pool
-from db.trades import record_screening_result, get_strategy_trade_counts_all
+from db.trades import (
+    record_screening_result, get_strategy_trade_counts_all,
+    get_matured_migrations, update_migration_status,
+)
 from trading.executor import execute_buy
 from trading.swap_client import load_wallet_keypair
 from filters.reputation import evaluate_reputation
@@ -617,6 +621,12 @@ async def _execute_approval(
 ):
     """منطق تنفيذ الشراء المشترك بين كل الاستراتيجيات — strategy يُسجَّل مع الصفقة
     لمقارنة أداء كل استراتيجية بمعزل عن الأخريات لاحقاً."""
+    # عناصر استراتيجية established_liquid تأتي من جدول long_term_watch (وليس
+    # watchlist) — لها id مختلف تماماً، فلا يجب تحديث جدول watchlist بهذا الـid
+    # إطلاقاً (قد يُصيب صفاً غير مرتبط بالخطأ). حالتها تُدار بدالة منفصلة
+    # (update_migration_status) من داخل run_established_liquid_loop نفسها.
+    is_long_term_entry = stage.startswith("established_liquid")
+
     current_capital = await _get_current_capital_sol()
     if current_capital <= 0:
         logger.warning(
@@ -634,7 +644,8 @@ async def _execute_approval(
             entry["mint_address"], entry["symbol"], entry.get("dex", ""),
             "rejected", f"{stage}_tatum_final_check", tatum_reason,
         )
-        await _update_watchlist_status(entry["id"], "rejected")
+        if not is_long_term_entry:
+            await _update_watchlist_status(entry["id"], "rejected")
         return
     logger.info(f"🔍 [{entry['symbol']}] {tatum_reason}")
 
@@ -658,7 +669,95 @@ async def _execute_approval(
         strategy=strategy,
         deployer_wallet=entry.get("deployer_wallet", ""),
     )
-    await _update_watchlist_status(entry["id"], "approved")
+    if not is_long_term_entry:
+        await _update_watchlist_status(entry["id"], "approved")
+
+
+async def evaluate_established_liquid_entry(entry: dict) -> Optional[tuple]:
+    """
+    استراتيجية "الاستقرار المُثبَت" — تفحص عملة تخرّجت من Pump.fun منذ
+    أيام (وليس دقائق)، وتتطلب سيولة وحجم تداول حقيقيَين مستمرَّين، بدل أي
+    زخم لحظي. الفلسفة: "ادخل بعد إثبات البقاء أياماً"، وليس "اقفز فوراً".
+    """
+    if not ESTABLISHED_LIQUID.enabled:
+        return None
+
+    mint_address = entry["mint_address"]
+    momentum_batch = await fetch_momentum_batch([mint_address])
+    data = momentum_batch.get(mint_address)
+    if data is None:
+        return None  # فشل تقني في جلب البيانات — لا قرار الآن
+
+    if data.liquidity_usd < ESTABLISHED_LIQUID.min_liquidity_usd:
+        return None
+    if data.volume_h24_usd < ESTABLISHED_LIQUID.min_volume_h24_usd:
+        return None
+    if data.price_change_h24_pct < ESTABLISHED_LIQUID.max_drawdown_h24_pct:
+        return None  # العملة في انهيار حاد حالياً — ليست فرصة "استقرار" حقيقية
+
+    fake_entry = {
+        "mint_address": mint_address,
+        "symbol": entry.get("symbol", ""),
+        "deployer_wallet": entry.get("deployer_wallet", ""),
+        "pool_address": data.pair_address,
+        "dex": "pump.fun",
+    }
+    security_ok, security_reason = await run_security_checks(fake_entry)
+    if not security_ok:
+        return (
+            "rejected",
+            f"استقرار مُثبَت (سيولة ${data.liquidity_usd:,.0f}) لكن فشل الأمان: {security_reason}",
+            0.0, "established_liquid",
+        )
+
+    if security_ok:
+        entry["pool_address"] = data.pair_address  # إثراء العنصر بعنوان المجمّع الفعلي قبل الشراء
+
+    return (
+        "approved",
+        f"💎 استراتيجية الاستقرار المُثبَت: سيولة ${data.liquidity_usd:,.0f}، "
+        f"حجم 24س ${data.volume_h24_usd:,.0f}، تغيّر 24س {data.price_change_h24_pct:+.1f}% "
+        f"— {security_reason}",
+        0.0, "established_liquid",
+    )
+
+
+async def run_established_liquid_loop():
+    """
+    حلقة مستقلة تماماً عن المسار السريع — تفحص دورياً (كل ساعة) العملات
+    المُتخرِّجة التي تجاوزت الحد الأدنى لعمر النضج (5 أيام افتراضياً)،
+    وتُقيّمها باستراتيجية "الاستقرار المُثبَت" منفصلة تماماً عن استراتيجيات
+    القنص السريع الأربع.
+    """
+    SCAN_INTERVAL_SECONDS = 3600  # كل ساعة — لا داعي لفحص أسرع، هذه عملات مستقرة نسبياً
+
+    while True:
+        await asyncio.sleep(SCAN_INTERVAL_SECONDS)
+        try:
+            matured = await get_matured_migrations(ESTABLISHED_LIQUID.min_age_days)
+            logger.info(f"💎 فحص العملات الراسخة الناضجة: {len(matured)} عملة تجاوزت {ESTABLISHED_LIQUID.min_age_days} أيام")
+
+            for entry in matured:
+                try:
+                    result = await evaluate_established_liquid_entry(entry)
+                    if result is None:
+                        continue  # لم تجتز فلاتر السيولة/الحجم بعد — تبقى "قيد المراقبة" للفحص القادم
+
+                    decision, reason, strength, strategy = result
+                    if decision == "approved":
+                        await _execute_approval(entry, reason, "established_liquid_approval", strategy=strategy)
+                        await update_migration_status(entry["mint_address"], "approved")
+                    elif decision == "rejected":
+                        logger.info(f"رفض العملة الراسخة {entry['symbol']}: {reason}")
+                        await record_screening_result(
+                            entry["mint_address"], entry["symbol"], "pump.fun",
+                            "rejected", "established_liquid_rejected", reason,
+                        )
+                        await update_migration_status(entry["mint_address"], "rejected")
+                except Exception as e:
+                    logger.error(f"⚠️ خطأ في فحص العملة الراسخة {entry.get('symbol', '?')}: {e}")
+        except Exception as e:
+            logger.error(f"⚠️ خطأ غير متوقع في حلقة العملات الراسخة: {type(e).__name__}: {e}")
 
 
 async def run_watchlist_loop():
