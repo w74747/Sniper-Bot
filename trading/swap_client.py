@@ -2,8 +2,10 @@
 دوال مشتركة لبناء وتوقيع وإرسال معاملات swap فعلية عبر Jupiter Swap API.
 تُستخدم من trading/executor.py لكل من الشراء والبيع (عادي وطارئ).
 """
+import asyncio
 import base64
 import logging
+import time
 
 import aiohttp
 from solders.keypair import Keypair
@@ -37,8 +39,34 @@ def load_wallet_keypair() -> Keypair:
     return Keypair.from_base58_string(WALLET_PRIVATE_KEY)
 
 
+class _JupiterRateLimiter:
+    """
+    محدِّد معدل عام مشترك بين **كل** استدعاءات Jupiter في المشروع بأكمله
+    (فحوصات الأمان، مراقبة الصفقات، التنفيذ الفعلي) — بدل أن يستدعي كل
+    جزء من الكود Jupiter بشكل مستقل، مما يُنتج انفجاراً في عدد الطلبات
+    عند تزامن عدة صفقات مفتوحة معاً (رأينا فعلياً 76% معدل فشل بسبب هذا).
+    نضمن هنا فاصلاً زمنياً أدنى بين أي طلبين متتاليين، بغض النظر عن مصدرهما.
+    """
+    def __init__(self, min_interval_seconds: float = 1.2):
+        self.min_interval = min_interval_seconds
+        self._lock = asyncio.Lock()
+        self._last_call_time = 0.0
+
+    async def wait(self):
+        async with self._lock:
+            now = time.time()
+            elapsed = now - self._last_call_time
+            if elapsed < self.min_interval:
+                await asyncio.sleep(self.min_interval - elapsed)
+            self._last_call_time = time.time()
+
+
+_jupiter_rate_limiter = _JupiterRateLimiter(min_interval_seconds=1.2)
+
+
 async def get_jupiter_quote(input_mint: str, output_mint: str, amount: int, slippage_bps: int) -> dict:
     """يستعلم عن أفضل مسار تبادل متاح حالياً عبر Jupiter."""
+    await _jupiter_rate_limiter.wait()
     params = {
         "inputMint": input_mint,
         "outputMint": output_mint,
