@@ -19,7 +19,7 @@ from solders.pubkey import Pubkey
 
 from config.settings import (
     WATCHLIST, EXIT_STRATEGY, FAST_TRACK, USE_DEVNET, HOLDER_VELOCITY,
-    SUSTAINED_TREND, GRADUATION_PROXIMITY,
+    SUSTAINED_TREND, GRADUATION_PROXIMITY, RUGCHECK_MAX_SCORE, RUGCHECK_MAX_INSIDERS,
 )
 from db import pool
 from db.trades import record_screening_result, get_strategy_trade_counts_all
@@ -34,6 +34,7 @@ from utils.solana_rpc import (
     get_token_largest_accounts, rpc_call, get_wallet_sol_balance, get_account_info_base64,
 )
 from utils.solscan_client import get_token_holders_solscan
+from utils.rugcheck_client import get_token_report
 
 logger = logging.getLogger("watchlist")
 
@@ -277,9 +278,10 @@ async def run_security_checks(entry: dict) -> tuple[bool, str]:
     فحوصات الأمان المشتركة الكاملة — يُستدعى من كلا المسارين، لكن فقط
     بعد تأكيد الزخم (المسار السريع) أو الاقتراب من قرار المسار العادي.
 
-    الترتيب: 1) الفحص الأمني الأساسي (RPC ذاتي، نتحكم بميزانيته) → 2) GoPlus
-    (خدمة خارجية بحصة محدودة أكثر) → 3) محاكاة البيع. هذا الترتيب يُوفّر
-    حصة GoPlus النادرة لمن يجتاز الفحص الأساسي الأرخص أولاً.
+    الترتيب: 1) الفحص الأمني الأساسي (RPC ذاتي، نتحكم بميزانيته) → 2) RugCheck
+    (مجاني بالكامل، يكتشف المطلعين والمحافظ المُجمَّعة) → 3) GoPlus (خدمة
+    خارجية بحصة محدودة أكثر) → 4) محاكاة البيع. هذا الترتيب يُوفّر حصة
+    GoPlus النادرة لمن يجتاز الفحوصات الأرخص أولاً.
     """
     mint_address = entry["mint_address"]
     deployer_wallet = entry.get("deployer_wallet", "")
@@ -288,6 +290,23 @@ async def run_security_checks(entry: dict) -> tuple[bool, str]:
     onchain_ok, onchain_reason = await run_onchain_filters_for_entry(entry)
     if not onchain_ok:
         return False, f"فشل الفحص الأساسي: {onchain_reason}"
+
+    # RugCheck: طبقة أمان إضافية مجانية بالكامل — fail-open كامل عند أي فشل
+    # تقني (لا تُوقف الفحص إن كانت الخدمة غير متاحة الآن).
+    rugcheck_result = await get_token_report(mint_address)
+    if rugcheck_result["available"]:
+        if rugcheck_result["rugged"]:
+            return False, f"RugCheck: مُصنَّفة كـrug pull مؤكَّد بالفعل"
+        if rugcheck_result["score_normalised"] > RUGCHECK_MAX_SCORE:
+            return False, (
+                f"RugCheck: درجة خطر {rugcheck_result['score_normalised']:.0f}/100 "
+                f"(الحد الأقصى {RUGCHECK_MAX_SCORE})"
+            )
+        if rugcheck_result["insiders_detected"] > RUGCHECK_MAX_INSIDERS:
+            return False, (
+                f"RugCheck: اكتُشف {rugcheck_result['insiders_detected']} محفظة مطّلعة "
+                f"مرتبطة (الحد الأقصى {RUGCHECK_MAX_INSIDERS}) — تركّز حيازة مخفي"
+            )
 
     reputation_ok, reputation_reason = await evaluate_reputation(mint_address, deployer_wallet)
     if not reputation_ok:
