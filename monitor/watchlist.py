@@ -637,6 +637,7 @@ async def _execute_approval(
         capital_sol=capital_sol,
         filter_report={"decision": reason, "stage": stage, "tatum_confirmation": tatum_reason},
         strategy=strategy,
+        deployer_wallet=entry.get("deployer_wallet", ""),
     )
     await _update_watchlist_status(entry["id"], "approved")
 
