@@ -22,7 +22,7 @@ from config.settings import (
     SUSTAINED_TREND, GRADUATION_PROXIMITY,
 )
 from db import pool
-from db.trades import record_screening_result
+from db.trades import record_screening_result, get_strategy_trade_counts_all
 from trading.executor import execute_buy
 from trading.swap_client import load_wallet_keypair
 from filters.reputation import evaluate_reputation
@@ -679,6 +679,47 @@ async def run_watchlist_loop():
         await asyncio.sleep(WATCHLIST.check_interval_minutes * 60)
 
 
+async def _try_momentum_chase(entry: dict, prefetched) -> Optional[tuple]:
+    result = await evaluate_fast_track_entry(entry, prefetched_momentum=prefetched)
+    if result is None:
+        return None
+    decision, reason, strength = result
+    return decision, reason, strength, "momentum_chase"
+
+
+async def _try_holder_velocity(entry: dict, prefetched) -> Optional[tuple]:
+    result = await evaluate_holder_velocity_entry(entry)
+    if result is None:
+        return None
+    decision, reason, _ = result
+    return decision, reason, 0.0, "holder_velocity"
+
+
+async def _try_sustained_trend(entry: dict, prefetched) -> Optional[tuple]:
+    result = await evaluate_sustained_trend_entry(entry, prefetched_momentum=prefetched)
+    if result is None:
+        return None
+    decision, reason, strength = result
+    return decision, reason, strength, "sustained_trend"
+
+
+async def _try_graduation_proximity(entry: dict, prefetched) -> Optional[tuple]:
+    result = await evaluate_graduation_proximity_entry(entry, prefetched_momentum=prefetched)
+    if result is None:
+        return None
+    decision, reason, _ = result
+    return decision, reason, 0.0, "graduation_proximity"
+
+
+_STRATEGY_EVALUATORS = {
+    "momentum_chase": _try_momentum_chase,
+    "holder_velocity": _try_holder_velocity,
+    "sustained_trend": _try_sustained_trend,
+    "graduation_proximity": _try_graduation_proximity,
+}
+_FAST_TRACK_STRATEGY_NAMES = list(_STRATEGY_EVALUATORS.keys())
+
+
 async def run_fast_track_loop():
     """حلقة منفصلة أسرع بكثير (كل 30 ثانية) تفحص فقط العملات الحديثة جداً."""
     if not FAST_TRACK.enabled:
@@ -710,6 +751,20 @@ async def run_fast_track_loop():
             mint_addresses = [row["mint_address"] for row in eligible_rows]
             momentum_by_mint = await fetch_momentum_batch(mint_addresses) if mint_addresses else {}
 
+            # التوزيع المتساوي الحقيقي بين الاستراتيجيات: نجلب عدد صفقات كل
+            # استراتيجية (مفتوحة+مغلقة) مرة واحدة لكل دورة فحص، ونُرتّب فحص
+            # الاستراتيجيات الأربع من الأقل حصة للأكثر — بدل ترتيب ثابت كان
+            # يجعل momentum_chase (الأكثر تساهلاً) تستحوذ دائماً على الأولوية
+            # وتحرم الاستراتيجيات الأخرى من عدد كافٍ من الصفقات للمقارنة العادلة.
+            try:
+                strategy_counts = await get_strategy_trade_counts_all()
+            except Exception as e:
+                logger.warning(f"تعذّر جلب عدد صفقات الاستراتيجيات (سيُستخدَم ترتيب افتراضي): {e}")
+                strategy_counts = {}
+            for s in _FAST_TRACK_STRATEGY_NAMES:
+                strategy_counts.setdefault(s, 0)
+            priority_order = sorted(_FAST_TRACK_STRATEGY_NAMES, key=lambda s: strategy_counts.get(s, 0))
+
             for row in rows:
                 entry = dict(row)
                 try:
@@ -721,76 +776,28 @@ async def run_fast_track_loop():
                     # هذا هو بالضبط الخلل الذي كان يمنع sustained_trend وgraduation_proximity
                     # من الحصول على أي فرصة حقيقية للمقارنة (لاحظنا 1 صفقة فقط لكل
                     # منهما بعد 106 صفقة إجمالاً — دليل قاطع أن الرفض كان يُغلق الباب خطأً).
-
-                    # استراتيجية 1: مطاردة الزخم اللحظي (momentum_chase)
-                    result = await evaluate_fast_track_entry(entry, prefetched_momentum=prefetched)
                     handled = False
-                    if result is not None:
-                        decision, reason, momentum_strength_pct = result
+                    for strategy_name in priority_order:
+                        if handled:
+                            break
+                        evaluator = _STRATEGY_EVALUATORS[strategy_name]
+                        result = await evaluator(entry, prefetched)
+                        if result is None:
+                            continue
+
+                        decision, reason, strength, strat = result
                         if decision == "approved":
                             await _execute_approval(
                                 entry, reason, "fast_track_approval",
-                                momentum_strength_pct=momentum_strength_pct,
-                                strategy="momentum_chase",
+                                momentum_strength_pct=strength, strategy=strat,
                             )
                             handled = True
                         elif decision == "rejected":
-                            logger.info(f"رفض المسار السريع (زخم سعري) لـ {entry['symbol']}: {reason}")
+                            logger.info(f"رفض المسار السريع ({strat}) لـ {entry['symbol']}: {reason}")
                             await record_screening_result(
                                 entry["mint_address"], entry["symbol"], entry.get("dex", ""),
-                                "rejected", "fast_track_rejected", reason,
+                                "rejected", f"fast_track_rejected_{strat}", reason,
                             )
-
-                    # استراتيجية 2: سرعة انضمام حاملين جدد (holder_velocity)
-                    if not handled:
-                        hv_result = await evaluate_holder_velocity_entry(entry)
-                        if hv_result is not None:
-                            hv_decision, hv_reason, _ = hv_result
-                            if hv_decision == "approved":
-                                await _execute_approval(
-                                    entry, hv_reason, "fast_track_approval", strategy="holder_velocity"
-                                )
-                                handled = True
-                            elif hv_decision == "rejected":
-                                logger.info(f"رفض المسار السريع (سرعة حاملين) لـ {entry['symbol']}: {hv_reason}")
-                                await record_screening_result(
-                                    entry["mint_address"], entry["symbol"], entry.get("dex", ""),
-                                    "rejected", "fast_track_rejected_holder_velocity", hv_reason,
-                                )
-
-                    # استراتيجية 3: الزخم المستدام عبر قراءتين متتاليتين (sustained_trend)
-                    if not handled:
-                        st_result = await evaluate_sustained_trend_entry(entry, prefetched_momentum=prefetched)
-                        if st_result is not None:
-                            st_decision, st_reason, st_strength = st_result
-                            if st_decision == "approved":
-                                await _execute_approval(
-                                    entry, st_reason, "fast_track_approval",
-                                    momentum_strength_pct=st_strength, strategy="sustained_trend",
-                                )
-                                handled = True
-                            elif st_decision == "rejected":
-                                logger.info(f"رفض المسار السريع (زخم مستدام) لـ {entry['symbol']}: {st_reason}")
-                                await record_screening_result(
-                                    entry["mint_address"], entry["symbol"], entry.get("dex", ""),
-                                    "rejected", "fast_track_rejected_sustained_trend", st_reason,
-                                )
-
-                    # استراتيجية 4: قرب عتبة التخرج (graduation_proximity)
-                    if not handled:
-                        gp_result = await evaluate_graduation_proximity_entry(entry, prefetched_momentum=prefetched)
-                        if gp_result is not None:
-                            gp_decision, gp_reason, _ = gp_result
-                            if gp_decision == "approved":
-                                await _execute_approval(
-                                    entry, gp_reason, "fast_track_approval", strategy="graduation_proximity"
-                                )
-                            elif gp_decision == "rejected":
-                                logger.info(f"رفض المسار السريع (قرب التخرج) لـ {entry['symbol']}: {gp_reason}")
-                                await record_screening_result(
-                                    entry["mint_address"], entry["symbol"], entry.get("dex", ""),
-                                    "rejected", "fast_track_rejected_graduation", gp_reason,
-                                )
                 except Exception as e:
                     logger.error(
                         f"⚠️ خطأ غير متوقع في المسار السريع لـ {entry.get('symbol', '?')}: "
