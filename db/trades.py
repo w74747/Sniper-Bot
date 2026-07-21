@@ -72,6 +72,14 @@ async def init_db():
             holders_at_add INTEGER DEFAULT 0,
             status TEXT DEFAULT 'watching'
         );
+        CREATE TABLE IF NOT EXISTS long_term_watch (
+            id SERIAL PRIMARY KEY,
+            mint_address TEXT NOT NULL UNIQUE,
+            symbol TEXT,
+            deployer_wallet TEXT,
+            migrated_at DOUBLE PRECISION,
+            status TEXT DEFAULT 'watching'
+        );
         CREATE TABLE IF NOT EXISTS app_logs (
             id SERIAL PRIMARY KEY,
             timestamp DOUBLE PRECISION,
@@ -245,6 +253,30 @@ async def get_strategy_trade_counts_all() -> dict:
         key = row["strategy"] or "momentum_chase"
         result[key] = result.get(key, 0) + row["c"]
     return result
+
+
+async def record_migration(mint_address: str, symbol: str, deployer_wallet: str) -> None:
+    """يُسجَّل عند اكتشاف تخرّج عملة Pump.fun إلى Raydium/PumpSwap — بداية فترة المراقبة طويلة الأمد."""
+    await pool.execute("""
+        INSERT INTO long_term_watch (mint_address, symbol, deployer_wallet, migrated_at, status)
+        VALUES ($1, $2, $3, $4, 'watching')
+        ON CONFLICT (mint_address) DO NOTHING
+    """, mint_address, symbol, deployer_wallet, time.time())
+
+
+async def get_matured_migrations(min_age_days: float, status: str = "watching") -> list:
+    """يرجع العملات المُتخرِّجة التي تجاوزت الحد الأدنى لعمر النضج، ولم تُقيَّم بعد."""
+    cutoff_ts = time.time() - (min_age_days * 86400)
+    rows = await pool.fetch("""
+        SELECT * FROM long_term_watch WHERE status = $1 AND migrated_at <= $2
+    """, status, cutoff_ts)
+    return [dict(r) for r in rows]
+
+
+async def update_migration_status(mint_address: str, status: str) -> None:
+    await pool.execute(
+        "UPDATE long_term_watch SET status = $1 WHERE mint_address = $2", status, mint_address
+    )
 
 
 async def get_performance_by_strategy() -> list:
