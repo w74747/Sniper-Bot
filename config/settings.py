@@ -94,6 +94,11 @@ DEEPSEEK_API_BASE = "https://api.deepseek.com"
 SOLSCAN_API_KEY = os.getenv("SOLSCAN_API_KEY", "").strip()
 SOLSCAN_API_BASE = "https://pro-api.solscan.io/v2.0"
 
+# PumpPortal API key — مطلوب فقط لتفعيل subscribeTokenTrade (المراقبة اللحظية
+# لصفقاتنا المفتوحة عبر WebSocket). بدونه، يستمر subscribeNewToken (اكتشاف
+# العملات الجديدة) بالعمل مجاناً كما هو — فقط المراقبة اللحظية تحديداً تتطلبه.
+PUMPPORTAL_API_KEY = os.getenv("PUMPPORTAL_API_KEY", "").strip()
+
 # Solana العام: مزوّد Solana Foundation الرسمي، مجاني تماماً وبدون أي تسجيل أو
 # مفتاح — لكن حدوده صارمة جداً ووثوقيته متذبذبة (مصمم للطوارئ/الاختبار وليس
 # الاستخدام المكثف). نضعه كخيار احتياطي أخير في نهاية قائمة التناوب فقط،
@@ -244,11 +249,11 @@ class ExitStrategySettings:
     emergency_slippage_pct: float = 20.0      # الانزلاق المسموح عند الإغلاق الطارئ (خروج مضمون)
 
     # حماية رأس المال
-    max_capital_pct_per_trade: float = 5.0    # خُفِّض من 10% إلى 5% تماشياً مع نصيحة محترفي
-                                                # meme coins: لا تُخاطر بأكثر من 1-5% لكل صفقة،
-                                                # لأن الغالبية العظمى تذهب للصفر — التعويض يأتي
-                                                # من صفقة نادرة برقم كبير (50-100 ضعف)، وليس من
-                                                # حجم صفقة كبير على كل محاولة.
+    max_capital_pct_per_trade: float = 2.5   # خُفِّض من 5% إلى 2.5% — الخسائر الفعلية المُسجَّلة
+                                                # (73-100%) تتجاوز وقف الخسارة "النظري" (20%) بكثير
+                                                # بسبب تبخر السيولة الأسرع من دورة المراقبة؛ حجم
+                                                # الصفقة يجب أن يفترض هذا السيناريو كاحتمال حقيقي
+                                                # متكرر، وليس استثناءً نادراً
     max_consecutive_losses: int = 5           # قاطع الدائرة (Circuit Breaker)
     circuit_breaker_cooldown_minutes: int = 120
 
@@ -349,6 +354,10 @@ class PostTradeMonitorSettings:
     """إعدادات المراقبة بعد الدخول (الطبقتان: on-chain آلية + خارجية دورية)."""
 
     onchain_check_interval_seconds: int = 5
+    critical_window_minutes: float = 3.0      # أول 3 دقائق بعد الشراء — الفترة الأخطر
+                                                # لانهيار سيولة مفاجئ (rug/dump)، نراقب خلالها
+                                                # بوتيرة أسرع بكثير لتقليل فجوة الاكتشاف
+    critical_window_check_interval_seconds: int = 2  # كل ثانيتين بدل 5 خلال النافذة الحرجة
     external_check_interval_minutes: int = 60
 
     auto_close_on_tax_increase_above_pct: float = 25.0
