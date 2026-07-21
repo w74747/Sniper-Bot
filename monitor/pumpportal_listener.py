@@ -158,6 +158,25 @@ async def _trigger_emergency_exit(mint_address: str, reason: str):
         logger.error(f"⚠️ فشل تنفيذ البيع الطارئ اللحظي لـ {mint_address}: {e}")
 
 
+async def _handle_migration_event(data: dict):
+    """
+    يُسجَّل عند اكتشاف تخرّج عملة Pump.fun (ترقية لـRaydium/PumpSwap) —
+    بداية فترة "مراقبة طويلة الأمد" لاستراتيجية established_liquid الجديدة.
+    لا نشتري فوراً هنا إطلاقاً — فقط نُسجّل الوقت، وننتظر أياماً لنرى هل
+    تستمر بسيولة وتداول حقيقيين قبل حتى التفكير بالدخول.
+    """
+    mint_address = data.get("mint", "")
+    symbol = data.get("symbol", "")
+    deployer_wallet = data.get("traderPublicKey", "")
+
+    try:
+        from db import trades as db
+        await db.record_migration(mint_address, symbol, deployer_wallet)
+        logger.info(f"🎓 [PumpPortal] عملة تخرّجت فعلياً: {symbol or '?'} ({mint_address}) — بدأت مراقبة طويلة الأمد")
+    except Exception as e:
+        logger.warning(f"تعذّر تسجيل حدث التخرّج لـ {mint_address}: {e}")
+
+
 def _derive_associated_bonding_curve(bonding_curve: str, mint: str) -> str:
     """
     يحسب عنوان ATA الخاص بحساب bonding curve لعملة معيّنة — نفس المشتقة
@@ -206,6 +225,7 @@ async def run_pumpportal_listener():
             ) as ws:
                 _ws_ref["ws"] = ws
                 await ws.send(json.dumps({"method": "subscribeNewToken"}))
+                await ws.send(json.dumps({"method": "subscribeMigration"}))
 
                 # إعادة الاشتراك في كل الصفقات المفتوحة حالياً بعد أي انقطاع/إعادة
                 # اتصال — بدون هذا، ستفقد المراقبة اللحظية لصفقات مفتوحة بالفعل.
@@ -222,6 +242,14 @@ async def run_pumpportal_listener():
                         continue
 
                     tx_type = data.get("txType")
+
+                    # حدث "تخرّج" (ترقية لـRaydium/PumpSwap) — هذه العملة نجت فعلياً
+                    # من أخطر مرحلة (فوضى الإطلاق الأولى)؛ نُسجّلها لمراقبة طويلة
+                    # الأمد (استراتيجية established_liquid الجديدة)، منفصلة تماماً
+                    # عن استراتيجيات القنص السريع الأربع.
+                    if tx_type == "migration" and "mint" in data:
+                        asyncio.create_task(_handle_migration_event(data))
+                        continue
 
                     # حدث تداول لحظي (بيع/شراء) على عملة نُراقبها — فحص انهيار سيولة فوري
                     if tx_type in ("buy", "sell") and "mint" in data:
