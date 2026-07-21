@@ -55,6 +55,27 @@ install_database_log_handler()
 logger = logging.getLogger("main")
 
 
+async def run_daily_cleanup_loop():
+    """
+    تنظيف دوري يومي للبيانات القديمة غير الضرورية — يمنع تكرار مشكلة
+    امتلاء مساحة قرص قاعدة البيانات (وصلت 79% فعلياً بعد أسابيع بلا أي
+    تنظيف). لا يمس جدول trades (سجل مالي دائم) ولا عناصر watchlist
+    المرتبطة بصفقات حقيقية (approved/watching) إطلاقاً.
+    """
+    CLEANUP_INTERVAL_SECONDS = 86400  # مرة واحدة يومياً
+
+    while True:
+        await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
+        try:
+            result = await db.cleanup_old_data()
+            logger.info(
+                f"🧹 تنظيف يومي: حُذف {result['screening_log_deleted']} سجل فحص، "
+                f"{result['app_logs_deleted']} سجل تطبيق، {result['watchlist_deleted']} عنصر مراقبة قديم"
+            )
+        except Exception as e:
+            logger.error(f"⚠️ خطأ غير متوقع في التنظيف الدوري: {type(e).__name__}: {e}")
+
+
 async def main():
     logger.info("بدء تشغيل البوت...")
     await db.init_db()
@@ -69,6 +90,7 @@ async def main():
         asyncio.create_task(run_hourly_ai_analysis_loop()),  # تحليل ذكي دوري عبر DeepSeek كل 30 دقيقة
         asyncio.create_task(run_code_diagnosis_loop()),      # تشخيص كود تلقائي عبر DeepSeek كل ساعتين
         asyncio.create_task(run_helius_quota_watch_loop()),  # مراقبة وتيرة استهلاك حصة Helius الشهرية
+        asyncio.create_task(run_daily_cleanup_loop()),       # تنظيف يومي لمنع امتلاء مساحة القرص
     ]
     await asyncio.gather(*tasks)
 
