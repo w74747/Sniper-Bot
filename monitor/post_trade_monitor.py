@@ -10,6 +10,7 @@
 """
 import asyncio
 import logging
+import time
 from typing import Optional
 
 from config.settings import POST_TRADE_MONITOR, EXIT_STRATEGY, USE_DEVNET
@@ -34,7 +35,7 @@ _peak_sol_value: dict = {}
 
 # تتبع "الركوب المجاني" — هل بِيع نصف الكمية بالفعل عند مضاعفة السعر؟ وكم
 # استُرِدَّ بالضبط (لإضافته لعائد البيع النهائي عند إغلاق الصفقة بالكامل).
-_free_ride_triggered: set = set()
+_profit_tiers_triggered: dict = {}  # trade_id -> set(أرقام المراحل المُفعَّلة: 1, 2, 3)
 _free_ride_recovered_sol: dict = {}
 
 
@@ -131,32 +132,45 @@ async def check_onchain_signals(trade: dict) -> tuple[bool, str]:
 
 async def check_free_ride_trigger(trade: dict) -> bool:
     """
-    يتحقق: هل وصلت القيمة القابلة للتحقق (عبر Jupiter الحقيقي) لأول مرة
-    لهدف "الركوب المجاني" (+100% افتراضياً)، ولم يُفعَّل من قبل لهذه
-    الصفقة؟ إن كان كذلك، ينفّذ بيعاً جزئياً فوراً (50% افتراضياً) لاسترداد
-    رأس المال، ويترك الباقي "بلا ضغط نفسي" يستمر تحت مظلة وقف الخسارة
-    المتحرك العادي (مستوحى من عقلية محترفي meme coins).
+    نظام الربح المتدرج بثلاث مراحل — يتحقق: هل وصلت القيمة القابلة للتحقق
+    (عبر Jupiter الحقيقي) لأي من العتبات الثلاث (2x، 5x، 10x) لأول مرة؟
+    كل مرحلة تبيع نصف الكمية المتبقية عندها، تاركة "moonbag" صغيراً في
+    النهاية يستمر بلا أي ضغط نفسي (رأس المال مُؤمَّن مراراً بالفعل) —
+    مستوحى من عقلية محترفي meme coins، ومُوسَّع من مرحلة واحدة لثلاث.
     """
     trade_id = trade["id"]
-    if trade_id in _free_ride_triggered:
-        return False  # فُعِّل من قبل بالفعل — لا نُكرره
-
     entry_capital_sol = trade.get("capital_invested_sol") or 0
     peak_sol = _peak_sol_value.get(trade_id)
     if peak_sol is None or entry_capital_sol <= 0:
         return False
 
     gain_pct = ((peak_sol - entry_capital_sol) / entry_capital_sol) * 100
-    if gain_pct < EXIT_STRATEGY.free_ride_trigger_pct:
-        return False
+    triggered_tiers = _profit_tiers_triggered.setdefault(trade_id, set())
+    any_triggered = False
 
-    _free_ride_triggered.add(trade_id)
-    recovered = await execute_partial_sell(
-        trade, EXIT_STRATEGY.free_ride_sell_fraction,
-        f"وصلت القيمة الحقيقية +{gain_pct:.1f}% (الهدف {EXIT_STRATEGY.free_ride_trigger_pct}%)",
-    )
-    _free_ride_recovered_sol[trade_id] = recovered
-    return True
+    tiers = [
+        (0, EXIT_STRATEGY.profit_tier0_trigger_pct, EXIT_STRATEGY.profit_tier0_sell_fraction),
+        (1, EXIT_STRATEGY.free_ride_trigger_pct, EXIT_STRATEGY.free_ride_sell_fraction),
+        (2, EXIT_STRATEGY.profit_tier2_trigger_pct, EXIT_STRATEGY.profit_tier2_sell_fraction),
+        (3, EXIT_STRATEGY.profit_tier3_trigger_pct, EXIT_STRATEGY.profit_tier3_sell_fraction),
+    ]
+
+    for tier_num, trigger_pct, sell_fraction in tiers:
+        if tier_num in triggered_tiers:
+            continue
+        if gain_pct < trigger_pct:
+            continue
+
+        triggered_tiers.add(tier_num)
+        recovered = await execute_partial_sell(
+            trade, sell_fraction,
+            f"المرحلة {tier_num} من الربح المتدرج: وصلت القيمة الحقيقية +{gain_pct:.1f}% "
+            f"(الهدف {trigger_pct}%)",
+        )
+        _free_ride_recovered_sol[trade_id] = _free_ride_recovered_sol.get(trade_id, 0.0) + recovered
+        any_triggered = True
+
+    return any_triggered
 
 
 async def check_price_based_signals(trade: dict) -> tuple[bool, str]:
@@ -233,7 +247,7 @@ async def monitor_single_trade(trade: dict):
         if not any(t["id"] == trade_id for t in open_trades):
             logger.info(f"الصفقة {trade_id} لم تعد مفتوحة — إيقاف المراقبة")
             _peak_sol_value.pop(trade_id, None)
-            _free_ride_triggered.discard(trade_id)
+            _profit_tiers_triggered.pop(trade_id, None)
             _free_ride_recovered_sol.pop(trade_id, None)
             return
 
@@ -244,7 +258,7 @@ async def monitor_single_trade(trade: dict):
             recovered = _free_ride_recovered_sol.pop(trade_id, 0.0)
             await execute_emergency_sell(trade, reason, extra_proceeds_sol=recovered)
             _peak_sol_value.pop(trade_id, None)
-            _free_ride_triggered.discard(trade_id)
+            _profit_tiers_triggered.pop(trade_id, None)
             return
 
         # فحص الركوب المجاني (مرة واحدة فقط لكل صفقة): عند مضاعفة السعر لأول
@@ -267,7 +281,7 @@ async def monitor_single_trade(trade: dict):
             recovered = _free_ride_recovered_sol.pop(trade_id, 0.0)
             await execute_normal_sell(trade, price_reason, extra_proceeds_sol=recovered)
             _peak_sol_value.pop(trade_id, None)
-            _free_ride_triggered.discard(trade_id)
+            _profit_tiers_triggered.pop(trade_id, None)
             return
 
         # الطبقة 2: فحص دوري للمصادر الخارجية → تنبيه فقط، لا إغلاق
@@ -283,7 +297,18 @@ async def monitor_single_trade(trade: dict):
                 )
 
         tick += 1
-        await asyncio.sleep(onchain_interval)
+
+        # مراقبة أسرع خلال النافذة الحرجة الأولى (أول 3 دقائق) — هذه الفترة
+        # الأخطر لانهيار سيولة مفاجئ (rug/dump سريع)؛ فحص كل 5 ثوانٍ قد يكون
+        # بطيئاً جداً هنا (سيولة قد تتبخر خلال ثانية أو ثانيتين)، فنُقلّص
+        # الفاصل الزمني لتقليل فجوة الاكتشاف قدر الإمكان في أخطر لحظة.
+        trade_age_minutes = (time.time() - (trade.get("entry_timestamp") or time.time())) / 60
+        if trade_age_minutes < POST_TRADE_MONITOR.critical_window_minutes:
+            sleep_interval = POST_TRADE_MONITOR.critical_window_check_interval_seconds
+        else:
+            sleep_interval = onchain_interval
+
+        await asyncio.sleep(sleep_interval)
 
 
 async def run_post_restore_health_check():
