@@ -30,6 +30,7 @@ async def execute_buy(
     capital_sol: float,
     filter_report: dict,
     strategy: str = "momentum_chase",
+    deployer_wallet: str = "",
 ) -> int:
     """
     ينفّذ عملية الشراء بعد اجتياز كل الفلاتر (on-chain + reputation + sell simulation).
@@ -83,7 +84,7 @@ async def execute_buy(
     # نفسه إطلاقاً، فقط يعني الاعتماد على الفحص الدوري وحده كاحتياطي.
     try:
         from monitor.pumpportal_listener import track_open_position
-        await track_open_position(mint_address)
+        await track_open_position(mint_address, deployer_wallet=deployer_wallet)
     except Exception as e:
         logger.debug(f"تعذّر تفعيل المراقبة اللحظية لـ {symbol} (غير حرج، الفحص الدوري يبقى فعّالاً): {e}")
 
