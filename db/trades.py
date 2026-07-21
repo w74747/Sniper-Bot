@@ -279,6 +279,40 @@ async def update_migration_status(mint_address: str, status: str) -> None:
     )
 
 
+async def cleanup_old_data(retention_days: int = 7, watchlist_retention_days: int = 14) -> dict:
+    """
+    تنظيف دوري للبيانات القديمة غير الضرورية — يمنع امتلاء مساحة القرص
+    تدريجياً (كما حدث فعلياً: وصلت المساحة 79% بعد أسابيع من التشغيل بلا
+    أي تنظيف). لا يمس أبداً: جدول trades (سجل مالي دائم)، أو عناصر
+    watchlist بحالة 'approved'/'watching' (مرتبطة بصفقات حقيقية).
+    """
+    cutoff = time.time() - (retention_days * 86400)
+    watchlist_cutoff = time.time() - (watchlist_retention_days * 86400)
+
+    screening_deleted = await pool.fetchval(
+        "WITH deleted AS (DELETE FROM screening_log WHERE timestamp < $1 RETURNING 1) SELECT COUNT(*) FROM deleted",
+        cutoff,
+    )
+    logs_deleted = await pool.fetchval(
+        "WITH deleted AS (DELETE FROM app_logs WHERE timestamp < $1 RETURNING 1) SELECT COUNT(*) FROM deleted",
+        cutoff,
+    )
+    watchlist_deleted = await pool.fetchval(
+        """WITH deleted AS (
+               DELETE FROM watchlist
+               WHERE status IN ('rejected', 'expired') AND added_at < $1
+               RETURNING 1
+           ) SELECT COUNT(*) FROM deleted""",
+        watchlist_cutoff,
+    )
+
+    return {
+        "screening_log_deleted": screening_deleted or 0,
+        "app_logs_deleted": logs_deleted or 0,
+        "watchlist_deleted": watchlist_deleted or 0,
+    }
+
+
 async def get_performance_by_strategy() -> list:
     """
     يرجع أداء كل استراتيجية بمعزل تام عن الأخريات — الأداة الوحيدة الحقيقية
