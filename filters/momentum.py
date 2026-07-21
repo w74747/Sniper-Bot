@@ -240,6 +240,16 @@ def evaluate_momentum(data: MomentumData) -> tuple[bool, str]:
             f"قابلة للتلاعب بسهولة، الحد الأدنى ${MOMENTUM.min_liquidity_usd:,.0f}"
         )
 
+    if data.market_cap_usd > 0 and data.liquidity_usd > 0:
+        mc_to_liq_ratio = data.market_cap_usd / data.liquidity_usd
+        if mc_to_liq_ratio > MOMENTUM.max_marketcap_to_liquidity_ratio:
+            return False, (
+                f"هشاشة بنيوية: القيمة السوقية (${data.market_cap_usd:,.0f}) أكبر بـ"
+                f"{mc_to_liq_ratio:.1f}x من السيولة الفعلية (${data.liquidity_usd:,.0f}) "
+                f"— بيع متوسط الحجم قادر على تحريك السعر بعنف (الحد الأقصى "
+                f"{MOMENTUM.max_marketcap_to_liquidity_ratio}x)"
+            )
+
     if data.price_change_m5_pct < MOMENTUM.min_price_change_m5_pct:
         return False, (
             f"تغيّر السعر ({data.price_change_m5_pct:.1f}%) أقل من الحد الأدنى "
