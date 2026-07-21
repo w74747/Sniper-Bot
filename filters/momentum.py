@@ -38,6 +38,12 @@ class MomentumData:
     sells_m5: int
     liquidity_usd: float
     market_cap_usd: float = 0.0  # للاستراتيجية الجديدة "قرب التخرج" (graduation_proximity)
+    pair_created_at_ms: float = 0.0    # للاستراتيجية الجديدة established_liquid (عمر العملة)
+    price_change_h1_pct: float = 0.0
+    price_change_h6_pct: float = 0.0
+    price_change_h24_pct: float = 0.0
+    volume_h24_usd: float = 0.0
+    pair_address: str = ""  # عنوان المجمّع الفعلي (على Raydium بعد التخرّج) — established_liquid
 
     @property
     def buy_sell_ratio_m5(self) -> float:
@@ -96,15 +102,23 @@ async def fetch_momentum_batch(mint_addresses: list, chain: str = "solana") -> d
         for mint_addr, (pair, _) in best_by_mint.items():
             try:
                 txns_m5 = (pair.get("txns") or {}).get("m5", {}) or {}
+                price_change = pair.get("priceChange") or {}
+                volume = pair.get("volume") or {}
                 result[mint_addr] = MomentumData(
                     source="dexscreener",
                     price_usd=float(pair.get("priceUsd") or 0),
-                    price_change_m5_pct=float((pair.get("priceChange") or {}).get("m5", 0) or 0),
-                    volume_m5_usd=float((pair.get("volume") or {}).get("m5", 0) or 0),
+                    price_change_m5_pct=float(price_change.get("m5", 0) or 0),
+                    volume_m5_usd=float(volume.get("m5", 0) or 0),
                     buys_m5=int(txns_m5.get("buys", 0) or 0),
                     sells_m5=int(txns_m5.get("sells", 0) or 0),
                     liquidity_usd=float((pair.get("liquidity") or {}).get("usd", 0) or 0),
                     market_cap_usd=float(pair.get("marketCap") or pair.get("fdv") or 0),
+                    pair_created_at_ms=float(pair.get("pairCreatedAt") or 0),
+                    price_change_h1_pct=float(price_change.get("h1", 0) or 0),
+                    price_change_h6_pct=float(price_change.get("h6", 0) or 0),
+                    price_change_h24_pct=float(price_change.get("h24", 0) or 0),
+                    volume_h24_usd=float(volume.get("h24", 0) or 0),
+                    pair_address=pair.get("pairAddress", "") or "",
                 )
             except (TypeError, ValueError):
                 continue
