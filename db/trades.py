@@ -232,6 +232,21 @@ async def get_recent_closed_trades_detail(hours: int = 1, limit: int = 30) -> li
     return result
 
 
+async def get_strategy_trade_counts_all() -> dict:
+    """
+    يرجع عدد كل صفقة (مفتوحة + مغلقة معاً) لكل استراتيجية — يُستخدَم للتوزيع
+    المتساوي الديناميكي بين الاستراتيجيات (وليس لتقييم الأداء؛ get_performance_by_strategy
+    مخصَّصة لذلك). كل الصفقات تُحتسَب هنا (بما فيها المفتوحة حالياً)، لأن الهدف
+    معرفة "حصة" كل استراتيجية من الفرص حتى الآن، وليس نتائجها فقط.
+    """
+    rows = await pool.fetch("SELECT strategy, COUNT(*) as c FROM trades GROUP BY strategy")
+    result: dict = {}
+    for row in rows:
+        key = row["strategy"] or "momentum_chase"
+        result[key] = result.get(key, 0) + row["c"]
+    return result
+
+
 async def get_performance_by_strategy() -> list:
     """
     يرجع أداء كل استراتيجية بمعزل تام عن الأخريات — الأداة الوحيدة الحقيقية
