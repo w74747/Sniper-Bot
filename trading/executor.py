@@ -77,6 +77,16 @@ async def execute_buy(
     except Exception as e:
         logger.debug(f"تعذّر جلب الرصيد الحالي لرسالة فتح الصفقة (غير حرج): {e}")
 
+    # تفعيل المراقبة اللحظية الحقيقية (WebSocket Push) لهذه الصفقة تحديداً —
+    # اكتشاف انهيار سيولة مفاجئ خلال أجزاء من الثانية، بدل انتظار دورة الفحص
+    # الدورية القادمة (كل 2-5 ثوانٍ). fail-open كامل: فشل هذا لا يُلغي الشراء
+    # نفسه إطلاقاً، فقط يعني الاعتماد على الفحص الدوري وحده كاحتياطي.
+    try:
+        from monitor.pumpportal_listener import track_open_position
+        await track_open_position(mint_address)
+    except Exception as e:
+        logger.debug(f"تعذّر تفعيل المراقبة اللحظية لـ {symbol} (غير حرج، الفحص الدوري يبقى فعّالاً): {e}")
+
     await notifier.alert_new_position_opened(
         symbol, mint_address, capital_sol, filter_summary,
         current_wallet_balance_sol=current_balance,
@@ -216,6 +226,13 @@ async def _execute_sell(
         current_wallet_balance_sol=current_balance,
         monthly_performance=monthly_performance,
     )
+
+    # إلغاء المراقبة اللحظية — الصفقة أُغلقت، لا داعي لمتابعة تداولها بعد الآن
+    try:
+        from monitor.pumpportal_listener import untrack_open_position
+        await untrack_open_position(mint_address)
+    except Exception as e:
+        logger.debug(f"تعذّر إلغاء المراقبة اللحظية لـ {mint_address} (غير حرج): {e}")
 
     # مراجعة سريعة عبر DeepSeek بعد كل إغلاق — تُبنى سجلاً تراكمياً لتحسين
     # المنطق مستقبلاً. غير مُعطِّلة إطلاقاً (fail-open كامل، لا تُبطئ التنفيذ
