@@ -16,6 +16,7 @@ from dataclasses import dataclass
 import aiohttp
 
 from config.settings import JUPITER_API_BASE, JUPITER_API_KEY
+from trading.swap_client import _jupiter_rate_limiter
 
 logger = logging.getLogger("sell_simulation")
 
@@ -54,6 +55,7 @@ async def simulate_sell(
     الغالبية العظمى من عقود honeypot الشائعة قبل الالتزام بأي رأس مال.
     """
     try:
+        await _jupiter_rate_limiter.wait()
         params = {
             "inputMint": mint_address,
             "outputMint": SOL_MINT_ADDRESS,
@@ -119,6 +121,11 @@ def evaluate_simulation_result(
 ) -> tuple[bool, str]:
     """يقرر القبول/الرفض بناءً على نتيجة المحاكاة."""
     if not result.can_sell:
+        if result.technical_failure:
+            # فشل تقني بحت (429/timeout) — ليس دليلاً على honeypot إطلاقاً.
+            # هذا التمييز يمنع تناقضاً مربكاً مثل: "honeypot محتمل: ...فشل
+            # تقني وليس honeypot" الذي كان يظهر سابقاً في تقارير الفحص الصحي.
+            return False, f"تعذّر تنفيذ المحاكاة تقنياً (وليس دليلاً على honeypot): {result.reason}"
         return False, f"فشلت محاكاة البيع تماماً — honeypot محتمل: {result.reason}"
 
     if result.effective_sell_tax_pct > max_acceptable_tax_pct:
