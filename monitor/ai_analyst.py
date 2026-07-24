@@ -139,7 +139,8 @@ async def analyze_and_summarize() -> str:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": _sanitize_report_data(report_data)},
         ],
-        "max_tokens": 500,
+        "max_tokens": 900,  # رُفِع من 500 — كان يقطع التقرير في منتصف كلمة أحياناً
+                             # بعد توسيع متطلبات التقرير لتغطية 4 نقاط (بدل 3)
         "temperature": 0.3,
     }
     headers = {
@@ -163,6 +164,18 @@ async def analyze_and_summarize() -> str:
     except Exception as e:
         logger.error(f"خطأ في الاتصال بـ DeepSeek: {e}")
         return f"⚠️ تعذّر الاتصال بـ DeepSeek لهذه الساعة: {e}"
+
+    # كشف تلقائي: هل تم قطع الرد بسبب بلوغ حد max_tokens؟ (وليس انتهاء طبيعي)
+    # — هذا بالضبط ما سبّب رسائل تيليجرام المقطوعة في منتصف كلمة سابقاً.
+    try:
+        finish_reason = data["choices"][0].get("finish_reason", "")
+        if finish_reason == "length":
+            logger.warning(
+                "⚠️ استجابة DeepSeek قُطعت عند بلوغ حد max_tokens (900) — "
+                "قد تحتاج رفعاً إضافياً إن تكرر هذا"
+            )
+    except (KeyError, IndexError):
+        pass
 
     try:
         return data["choices"][0]["message"]["content"].strip()
