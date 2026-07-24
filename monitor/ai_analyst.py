@@ -134,7 +134,7 @@ async def analyze_and_summarize() -> str:
     )
 
     payload = {
-        "model": "deepseek-chat",
+        "model": "deepseek-v4-flash",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": _sanitize_report_data(report_data)},
@@ -303,7 +303,7 @@ async def diagnose_recurring_code_issue() -> Optional[str]:
     )
 
     payload = {
-        "model": "deepseek-chat",
+        "model": "deepseek-v4-flash",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
@@ -457,7 +457,7 @@ async def review_closed_trade(symbol: str, entry_reason: str, exit_reason: str, 
         f"المتاحة وقت اتخاذه (وليس بناءً على النتيجة النهائية فقط)؟"
     )
     payload = {
-        "model": "deepseek-chat",
+        "model": "deepseek-v4-flash",
         "messages": [
             {"role": "system", "content": "أنت محلّل مختصر جداً. رد بجملة واحدة فقط بالعربية، بلا مقدمات."},
             {"role": "user", "content": user_content},
