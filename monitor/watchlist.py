@@ -20,7 +20,7 @@ from solders.pubkey import Pubkey
 from config.settings import (
     WATCHLIST, EXIT_STRATEGY, FAST_TRACK, USE_DEVNET, HOLDER_VELOCITY,
     SUSTAINED_TREND, GRADUATION_PROXIMITY, RUGCHECK_MAX_SCORE, RUGCHECK_MAX_INSIDERS,
-    ESTABLISHED_LIQUID,
+    ESTABLISHED_LIQUID, GMGN_MAX_RAT_TRADER_PCT, GMGN_MAX_BUNDLER_PCT, GMGN_MAX_RUG_RATIO,
 )
 from db import pool
 from db.trades import (
@@ -39,6 +39,7 @@ from utils.solana_rpc import (
 )
 from utils.solscan_client import get_token_holders_solscan
 from utils.rugcheck_client import get_token_report
+from utils.gmgn_client import get_token_info as get_gmgn_token_info
 
 logger = logging.getLogger("watchlist")
 
@@ -310,6 +311,26 @@ async def run_security_checks(entry: dict) -> tuple[bool, str]:
             return False, (
                 f"RugCheck: اكتُشف {rugcheck_result['insiders_detected']} محفظة مطّلعة "
                 f"مرتبطة (الحد الأقصى {RUGCHECK_MAX_INSIDERS}) — تركّز حيازة مخفي"
+            )
+
+    # GMGN: طبقة تحليل إضافية غنية (Smart Money، Rat Trader، Bundler) —
+    # fail-open كامل عند أي فشل تقني.
+    gmgn_result = await get_gmgn_token_info(mint_address)
+    if gmgn_result["available"]:
+        if gmgn_result["rat_trader_pct"] > GMGN_MAX_RAT_TRADER_PCT:
+            return False, (
+                f"GMGN: نسبة المحافظ المُرتزقة {gmgn_result['rat_trader_pct']:.1f}% "
+                f"(الحد الأقصى {GMGN_MAX_RAT_TRADER_PCT}%)"
+            )
+        if gmgn_result["bundler_pct"] > GMGN_MAX_BUNDLER_PCT:
+            return False, (
+                f"GMGN: نسبة الشراء المُجمَّع بالبوتات {gmgn_result['bundler_pct']:.1f}% "
+                f"(الحد الأقصى {GMGN_MAX_BUNDLER_PCT}%)"
+            )
+        if gmgn_result["rug_ratio"] > GMGN_MAX_RUG_RATIO:
+            return False, (
+                f"GMGN: درجة احتمال rug {gmgn_result['rug_ratio']:.2f} "
+                f"(الحد الأقصى {GMGN_MAX_RUG_RATIO})"
             )
 
     reputation_ok, reputation_reason = await evaluate_reputation(mint_address, deployer_wallet)
