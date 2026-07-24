@@ -137,7 +137,7 @@ async def analyze_and_summarize() -> str:
         "model": "deepseek-chat",
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": report_data},
+            {"role": "user", "content": _sanitize_report_data(report_data)},
         ],
         "max_tokens": 500,
         "temperature": 0.3,
@@ -155,7 +155,9 @@ async def analyze_and_summarize() -> str:
             ) as resp:
                 if resp.status != 200:
                     text = await resp.text()
-                    logger.error(f"فشل استدعاء DeepSeek: status {resp.status}: {text[:200]}")
+                    # نُسجّل النص الكامل (وليس أول 200 حرف فقط) — كان هذا التقصير
+                    # يُخفي السبب الحقيقي لأخطاء 400 (غالباً حجم الطلب أو محتوى غير صالح)
+                    logger.error(f"فشل استدعاء DeepSeek: status {resp.status}: {text}")
                     return f"⚠️ تعذّر الحصول على تحليل DeepSeek لهذه الساعة (status {resp.status})"
                 data = await resp.json()
     except Exception as e:
@@ -167,6 +169,24 @@ async def analyze_and_summarize() -> str:
     except (KeyError, IndexError) as e:
         logger.error(f"استجابة DeepSeek بصيغة غير متوقعة: {e}")
         return "⚠️ استجابة DeepSeek غير قابلة للقراءة هذه الساعة"
+
+
+def _sanitize_report_data(text: str, max_chars: int = 12000) -> str:
+    """
+    تحصين البيانات قبل إرسالها لـDeepSeek — يمنع فشل 400 الناتج عن حجم
+    طلب مفرط (كان تقرير الساعة قد كبر كثيراً بعد إضافة مقارنة الاستراتيجيات
+    وتفاصيل الصفقات) أو رموز تحكّم غير صالحة قد ترد ضمن أسماء عملات meme
+    غريبة (رموز Unicode نادرة تكسر تحقق المحتوى لدى بعض واجهات API).
+    """
+    # إزالة رموز التحكّم غير المطبوعة (باستثناء السطر الجديد والتبويب)
+    cleaned = "".join(ch for ch in text if ch == "\n" or ch == "\t" or ord(ch) >= 32)
+
+    if len(cleaned) > max_chars:
+        # نُبقي البداية (الإحصائيات والمقارنة الأهم) ونقتطع من الوسط، وليس النهاية،
+        # لأن نهاية التقرير تحتوي عادة عيّنة الأخطاء (أقل أهمية من الإحصائيات الأساسية)
+        cleaned = cleaned[:max_chars] + "\n\n[تم اقتطاع الباقي لتجاوز الحد الآمن لحجم الطلب]"
+
+    return cleaned
 
 
 async def send_hourly_ai_report():
