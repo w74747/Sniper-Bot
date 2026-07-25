@@ -212,6 +212,32 @@ async def record_alert(trade_id, alert_type, message, requires_human_confirmatio
 
 
 
+async def backfill_symbol_blocklist(loss_threshold_pct: float = -80.0) -> int:
+    """
+    يُشغَّل **مرة واحدة عند بدء تشغيل البوت** — يمسح كل الصفقات المغلقة
+    الموجودة بالفعل في جدول trades، ويُسجّل أي اسم أظهر خسارة كارثية
+    سابقاً في قائمة الحظر الدائمة **فوراً**، بدل الانتظار لتكرار الحدث
+    بعد نشر هذا الإصلاح. بدون هذا، عملة معروفة الخطورة (مثل "USOH" التي
+    فشلت 6+ مرات سابقاً) تبقى غير محظورة حتى تتكرر خسارتها **بعد** النشر
+    تحديداً — وهذا بالضبط ما حدث فعلياً قبل إضافة هذه الدالة.
+    آمن للتشغيل المتكرر (ON CONFLICT DO UPDATE في add_to_symbol_blocklist).
+    """
+    rows = await pool.fetch("""
+        SELECT symbol, mint_address FROM trades
+        WHERE capital_invested_sol > 0
+          AND status IN ('closed_profit', 'closed_loss', 'closed_flagged')
+          AND (profit_loss_sol / capital_invested_sol * 100) <= $1
+        ORDER BY exit_timestamp ASC
+    """, loss_threshold_pct)
+
+    count = 0
+    for row in rows:
+        if row["symbol"]:
+            await add_to_symbol_blocklist(row["symbol"], row["mint_address"])
+            count += 1
+    return count
+
+
 async def add_to_symbol_blocklist(symbol: str, mint_address: str) -> int:
     """
     يُضيف اسماً لقائمة الحظر الدائمة (أو يزيد عدّاده إن كان موجوداً بالفعل)
