@@ -203,7 +203,16 @@ async def check_price_based_signals(trade: dict) -> tuple[bool, str]:
     if peak_sol > entry_capital_sol:
         drop_from_peak_pct = ((peak_sol - current_sol_value) / peak_sol) * 100
         if drop_from_peak_pct >= EXIT_STRATEGY.trailing_stop_pct:
-            gain_now_pct = ((current_sol_value - entry_capital_sol) / entry_capital_sol) * 100
+            # إصلاح حرج: كان هذا الحساب يقارن قيمة الكمية *المتبقية فقط*
+            # (بعد بيع جزئي عبر الركوب المجاني) برأس المال *الكامل الأصلي*،
+            # متجاهلاً المبلغ المُسترَد بالفعل — فيُظهر رقماً متشائماً بشدة
+            # (مثلاً "≈1%") بينما النتيجة الفعلية النهائية +50%. الحساب
+            # النهائي الفعلي عند إغلاق الصفقة كان صحيحاً دائماً؛ هذا كان
+            # خطأ عرض فقط في نص السبب، لكنه ضلَّل تحليل DeepSeek مراراً.
+            already_recovered = _free_ride_recovered_sol.get(trade_id, 0.0)
+            gain_now_pct = (
+                (current_sol_value + already_recovered - entry_capital_sol) / entry_capital_sol
+            ) * 100
             return True, (
                 f"وقف خسارة متحرك (قيمة حقيقية عبر Jupiter): انخفضت "
                 f"{drop_from_peak_pct:.1f}% من أعلى قمة (الحد {EXIT_STRATEGY.trailing_stop_pct}%) "
