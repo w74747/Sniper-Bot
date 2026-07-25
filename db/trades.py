@@ -80,6 +80,14 @@ async def init_db():
             migrated_at DOUBLE PRECISION,
             status TEXT DEFAULT 'watching'
         );
+        CREATE TABLE IF NOT EXISTS symbol_blocklist (
+            id SERIAL PRIMARY KEY,
+            symbol TEXT NOT NULL UNIQUE,
+            catastrophic_count INTEGER DEFAULT 1,
+            first_flagged_at DOUBLE PRECISION,
+            last_flagged_at DOUBLE PRECISION,
+            last_mint_address TEXT
+        );
         CREATE TABLE IF NOT EXISTS app_logs (
             id SERIAL PRIMARY KEY,
             timestamp DOUBLE PRECISION,
@@ -201,6 +209,40 @@ async def record_alert(trade_id, alert_type, message, requires_human_confirmatio
            requires_human_confirmation) VALUES ($1, $2, $3, $4, $5)""",
         trade_id, time.time(), alert_type, message, int(requires_human_confirmation),
     )
+
+
+
+async def add_to_symbol_blocklist(symbol: str, mint_address: str) -> int:
+    """
+    يُضيف اسماً لقائمة الحظر الدائمة (أو يزيد عدّاده إن كان موجوداً بالفعل)
+    — ذاكرة **دائمة**، لا تُنسى أبداً ولا تعتمد على نافذة زمنية محدودة.
+    يُستدعى تلقائياً فور إغلاق أي صفقة بخسارة كارثية (executor.py).
+    """
+    now = time.time()
+    row = await pool.fetchrow("""
+        INSERT INTO symbol_blocklist (symbol, catastrophic_count, first_flagged_at, last_flagged_at, last_mint_address)
+        VALUES ($1, 1, $2, $2, $3)
+        ON CONFLICT (symbol) DO UPDATE SET
+            catastrophic_count = symbol_blocklist.catastrophic_count + 1,
+            last_flagged_at = $2,
+            last_mint_address = $3
+        RETURNING catastrophic_count
+    """, symbol, now, mint_address)
+    return row["catastrophic_count"] if row else 1
+
+
+async def is_symbol_blocklisted(symbol: str, max_occurrences: int = 1) -> tuple[bool, int]:
+    """
+    فحص سريع (بحث بمفتاح فريد مفهرَس تلقائياً) — هل هذا الاسم محظور دائماً؟
+    يرجع (محظور؟, عدد مرات الخسارة الكارثية المُسجَّلة له).
+    """
+    row = await pool.fetchrow(
+        "SELECT catastrophic_count FROM symbol_blocklist WHERE symbol = $1", symbol
+    )
+    if row is None:
+        return False, 0
+    count = row["catastrophic_count"]
+    return count >= max_occurrences, count
 
 
 async def get_recent_closed_trades_detail(hours: int = 1, limit: int = 30) -> list:
