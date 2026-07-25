@@ -21,11 +21,13 @@ from config.settings import (
     WATCHLIST, EXIT_STRATEGY, FAST_TRACK, USE_DEVNET, HOLDER_VELOCITY,
     SUSTAINED_TREND, GRADUATION_PROXIMITY, RUGCHECK_MAX_SCORE, RUGCHECK_MAX_INSIDERS,
     ESTABLISHED_LIQUID, GMGN_MAX_RAT_TRADER_PCT, GMGN_MAX_BUNDLER_PCT, GMGN_MAX_RUG_RATIO,
+    SYMBOL_BLOCKLIST_LOSS_THRESHOLD_PCT, SYMBOL_BLOCKLIST_MAX_OCCURRENCES,
 )
 from db import pool
 from db.trades import (
     record_screening_result, get_strategy_trade_counts_all,
     get_matured_migrations, update_migration_status,
+    is_symbol_blocklisted,
 )
 from trading.executor import execute_buy
 from trading.swap_client import load_wallet_keypair
@@ -283,7 +285,8 @@ async def run_security_checks(entry: dict) -> tuple[bool, str]:
     فحوصات الأمان المشتركة الكاملة — يُستدعى من كلا المسارين، لكن فقط
     بعد تأكيد الزخم (المسار السريع) أو الاقتراب من قرار المسار العادي.
 
-    الترتيب: 1) الفحص الأمني الأساسي (RPC ذاتي، نتحكم بميزانيته) → 2) RugCheck
+    الترتيب: 0) حظر الأسماء المُستنسَخة (استعلام محلي فوري، أسرع فحص ممكن) →
+    1) الفحص الأمني الأساسي (RPC ذاتي، نتحكم بميزانيته) → 2) RugCheck
     (مجاني بالكامل، يكتشف المطلعين والمحافظ المُجمَّعة) → 3) GoPlus (خدمة
     خارجية بحصة محدودة أكثر) → 4) محاكاة البيع. هذا الترتيب يُوفّر حصة
     GoPlus النادرة لمن يجتاز الفحوصات الأرخص أولاً.
@@ -291,6 +294,21 @@ async def run_security_checks(entry: dict) -> tuple[bool, str]:
     mint_address = entry["mint_address"]
     deployer_wallet = entry.get("deployer_wallet", "")
     pool_address = entry.get("pool_address", "")
+    symbol = entry.get("symbol", "")
+
+    # فحص 0: هل هذا الاسم بالتحديد محظور دائماً؟ (ذاكرة لا تُنسى أبداً،
+    # ليست محدودة بنافذة زمنية) — اكتشفنا فعلياً نمط استغلال منهجي لاسم
+    # "USOH" (12 عملة مختلفة تماماً بنفس الاسم، بتناوب شبه مثالي بين ربح
+    # ~+51% وخسارة كارثية ~-100%).
+    if symbol:
+        blocked, count = await is_symbol_blocklisted(symbol, SYMBOL_BLOCKLIST_MAX_OCCURRENCES)
+        if blocked:
+            return False, (
+                f"الاسم '{symbol}' محظور دائماً — سجّل {count} خسارة كارثية "
+                f"سابقة (أسوأ من {SYMBOL_BLOCKLIST_LOSS_THRESHOLD_PCT}%) بعناوين "
+                f"مختلفة — نمط استغلال اسم مُستنسَخ مُؤكَّد"
+            )
+
 
     onchain_ok, onchain_reason = await run_onchain_filters_for_entry(entry)
     if not onchain_ok:
