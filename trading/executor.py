@@ -9,7 +9,7 @@ import json
 import logging
 import time
 
-from config.settings import EXIT_STRATEGY, USE_DEVNET
+from config.settings import EXIT_STRATEGY, USE_DEVNET, SYMBOL_BLOCKLIST_LOSS_THRESHOLD_PCT
 from db import trades as db
 from alerts import notifier
 from trading.swap_client import (
@@ -202,6 +202,24 @@ async def _execute_sell(
         trade["id"], exit_price, total_proceeds_sol, reason, tx_hash, flagged=flagged
     )
     cumulative = await db.get_cumulative_performance()
+
+    # تسجيل تلقائي دائم للأسماء المُستنسَخة الخطرة — إن كانت هذه الخسارة
+    # كارثية (أسوأ من SYMBOL_BLOCKLIST_LOSS_THRESHOLD_PCT)، نُضيف الاسم
+    # لقائمة حظر **دائمة** فوراً، لمنع أي عملة مستقبلية بنفس الاسم من
+    # الدخول إطلاقاً — بغض النظر عن عنوان mint (اكتشفنا فعلياً 12 عملة
+    # مختلفة بنفس الاسم "USOH" تستغل نمط ربح/خسارة متكرر بذكاء).
+    capital = trade.get("capital_invested_sol") or 0
+    if capital > 0:
+        pl_pct = (profit_loss / capital) * 100
+        if pl_pct <= SYMBOL_BLOCKLIST_LOSS_THRESHOLD_PCT:
+            try:
+                new_count = await db.add_to_symbol_blocklist(trade["symbol"], mint_address)
+                logger.warning(
+                    f"🚫 تسجيل '{trade['symbol']}' في قائمة الحظر الدائمة "
+                    f"(خسارة {pl_pct:.1f}%) — المرة رقم {new_count} لهذا الاسم"
+                )
+            except Exception as e:
+                logger.error(f"تعذّر تسجيل '{trade['symbol']}' في قائمة الحظر: {e}")
 
     # جلب الرصيد الحالي الفعلي + الأداء الشهري — fail-open كامل (لا نُفشل
     # عملية الإغلاق نفسها إن تعذّر جلب أي منهما، فقط نُرسل الرسالة بدونهما).
