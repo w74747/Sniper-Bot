@@ -478,9 +478,17 @@ async def evaluate_sustained_trend_entry(entry: dict, prefetched_momentum=None) 
         return None
 
     mint_address = entry["mint_address"]
-    current_positive = (
-        prefetched_momentum.price_change_m5_pct >= SUSTAINED_TREND.min_price_change_m5_pct
-    )
+    price_change = prefetched_momentum.price_change_m5_pct
+
+    # إصلاح حرج: رفض فوري للزخم المتطرف — لا يُحتسَب كإيجابي إطلاقاً، بغض
+    # النظر عن القراءة السابقة. رأينا فعلياً صفقات بزخم +33,742% و+54,008%
+    # تنهار بالكامل خلال دقائق قليلة رغم "تأكيد" القراءتين المتتاليتين —
+    # لأن كلتا القراءتين قد تلتقطان نفس القمة المصطنعة قبل الانهيار مباشرة.
+    if price_change > SUSTAINED_TREND.max_price_change_m5_pct:
+        _previous_momentum_positive[mint_address] = False
+        return None
+
+    current_positive = price_change >= SUSTAINED_TREND.min_price_change_m5_pct
     was_positive = _previous_momentum_positive.get(mint_address, False)
     _previous_momentum_positive[mint_address] = current_positive
 
