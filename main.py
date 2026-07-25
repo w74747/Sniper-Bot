@@ -80,6 +80,15 @@ async def main():
     logger.info("بدء تشغيل البوت...")
     await db.init_db()
 
+    # تعبئة قائمة الحظر الدائمة من التاريخ الموجود بالفعل — بدون هذا، أسماء
+    # معروفة الخطورة (مثل "USOH" التي فشلت مراراً في تاريخنا) تبقى غير
+    # محظورة حتى تتكرر خسارتها من جديد بعد النشر تحديداً.
+    try:
+        blocked_count = await db.backfill_symbol_blocklist()
+        logger.info(f"🚫 تعبئة قائمة الحظر الدائمة: {blocked_count} صفقة كارثية من التاريخ سُجِّلت")
+    except Exception as e:
+        logger.error(f"⚠️ فشلت تعبئة قائمة الحظر الدائمة (غير حرج، ستُبنى تدريجياً): {e}")
+
     tasks = [
         asyncio.create_task(run_pumpportal_listener()),  # اكتشاف Pump.fun فوري ومجاني (WebSocket مخصص)
         asyncio.create_task(run_watchlist_loop()),     # مراجعة قائمة الانتظار العادية (24-72 ساعة)
