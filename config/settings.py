@@ -215,8 +215,8 @@ class FilterThresholds:
     min_lp_burned_or_locked_pct: float = 95.0    # % من LP يجب أن تكون محروقة/مقفلة
 
     # 2) عدم شبه بونزي في التوزيع
-    max_dev_wallet_pct: float = 8.0              # أقصى نسبة يملكها المطور من العرض الكلي
-    max_single_holder_pct: float = 8.0           # أقصى نسبة لأي محفظة غير المطور (عدا LP)
+    max_dev_wallet_pct: float = 15.0              # ✅ تخفيف من 8% → 15% (دخول صفقات أكثر)
+    max_single_holder_pct: float = 20.0           # ✅ تخفيف من 8% → 20% (قبول محافظ أكبر)
     max_top10_holders_combined_pct: float = 20.0  # أقصى نسبة لأعلى 10 حاملين مجتمعين (عدا LP) —
                                                    # حماية من تنسيق بيع جماعي حتى لو كان كل حامل
                                                    # فردياً ضمن الحد المسموح (مستوحى من عقلية الخبراء)
