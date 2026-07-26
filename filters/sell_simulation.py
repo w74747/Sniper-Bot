@@ -103,7 +103,7 @@ async def simulate_sell(
         )
 
     except Exception as e:
-        logger.error(f"فشلت محاكاة البيع لعملة {mint_address}: {e}")
+        logger.error(f"فشلت محاكاة البيع لعملة {mint_address}: {type(e).__name__}: {e}")
         # مبدأ fail-safe (قبل الشراء تحديداً): أي فشل في المحاكاة نفسها = رفض
         # العملة احتياطياً. لكن هذا فشل تقني بحت (اتصال/مهلة)، وليس اكتشافاً
         # حقيقياً — technical_failure=True يسمح لمراقبة ما بعد الشراء بتجاهله
