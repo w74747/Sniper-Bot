@@ -46,27 +46,40 @@ class _JupiterRateLimiter:
     جزء من الكود Jupiter بشكل مستقل، مما يُنتج انفجاراً في عدد الطلبات
     عند تزامن عدة صفقات مفتوحة معاً (رأينا فعلياً 76% معدل فشل بسبب هذا).
     نضمن هنا فاصلاً زمنياً أدنى بين أي طلبين متتاليين، بغض النظر عن مصدرهما.
+
+    إصلاح إضافي مهم: أضفنا "أولوية" اختيارية — اكتشفنا فعلياً أن التأخير
+    الصارم (1.2 ثانية) بين "لحظة قرار البيع" (فحص السعر) و"لحظة التنفيذ
+    الفعلي" (بناء معاملة البيع) يُسبب فجوة سعرية حقيقية في عملات تنهار
+    بسرعة (رأينا فجوة 10% فعلياً في صفقة SWIFL). الفحوصات الدورية الروتينية
+    (كل ثوانٍ قليلة على أي حال) تتحمّل التأخير الصارم، لكن لحظة التنفيذ
+    الفعلي (نادرة جداً، مرة واحدة لكل إغلاق صفقة) تستحق أولوية أعلى.
     """
-    def __init__(self, min_interval_seconds: float = 1.2):
+    def __init__(self, min_interval_seconds: float = 1.2, priority_min_interval_seconds: float = 0.3):
         self.min_interval = min_interval_seconds
+        self.priority_min_interval = priority_min_interval_seconds
         self._lock = asyncio.Lock()
         self._last_call_time = 0.0
 
-    async def wait(self):
+    async def wait(self, priority: bool = False):
         async with self._lock:
             now = time.time()
             elapsed = now - self._last_call_time
-            if elapsed < self.min_interval:
-                await asyncio.sleep(self.min_interval - elapsed)
+            required_interval = self.priority_min_interval if priority else self.min_interval
+            if elapsed < required_interval:
+                await asyncio.sleep(required_interval - elapsed)
             self._last_call_time = time.time()
 
 
-_jupiter_rate_limiter = _JupiterRateLimiter(min_interval_seconds=1.2)
+_jupiter_rate_limiter = _JupiterRateLimiter(min_interval_seconds=1.2, priority_min_interval_seconds=0.3)
 
 
-async def get_jupiter_quote(input_mint: str, output_mint: str, amount: int, slippage_bps: int) -> dict:
-    """يستعلم عن أفضل مسار تبادل متاح حالياً عبر Jupiter."""
-    await _jupiter_rate_limiter.wait()
+async def get_jupiter_quote(
+    input_mint: str, output_mint: str, amount: int, slippage_bps: int, priority: bool = False
+) -> dict:
+    """يستعلم عن أفضل مسار تبادل متاح حالياً عبر Jupiter.
+    priority=True: للتنفيذ الفعلي (شراء/بيع حقيقي) — تأخير أقصر بكثير (0.3s
+    بدل 1.2s) لتقليل الفجوة الزمنية بين قرار البيع وتنفيذه الفعلي."""
+    await _jupiter_rate_limiter.wait(priority=priority)
     params = {
         "inputMint": input_mint,
         "outputMint": output_mint,
@@ -121,7 +134,7 @@ async def build_and_send_swap(
     keypair = load_wallet_keypair()
     wallet_pubkey = str(keypair.pubkey())
 
-    quote = await get_jupiter_quote(input_mint, output_mint, amount, slippage_bps)
+    quote = await get_jupiter_quote(input_mint, output_mint, amount, slippage_bps, priority=True)
     if "outAmount" not in quote:
         raise RuntimeError(f"لا يوجد مسار swap متاح حالياً: {quote}")
 
