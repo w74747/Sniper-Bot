@@ -39,7 +39,6 @@ from filters.onchain_filters import TokenMetadata, run_all_onchain_filters, pars
 from utils.solana_rpc import (
     get_token_largest_accounts, rpc_call, get_wallet_sol_balance, get_account_info_base64,
 )
-from utils.solscan_client import get_token_holders_solscan
 from utils.rugcheck_client import get_token_report
 from utils.gmgn_client import get_token_info as get_gmgn_token_info
 
@@ -144,10 +143,8 @@ async def run_onchain_filters_for_entry(entry: dict) -> tuple[bool, str]:
 
     total_supply = mint_info["supply"] or 1
 
-    # نُجرّب Solscan أولاً (حصة منفصلة تماماً عن Helius، 10 مليون CU) — يُخفّف
-    # الضغط عن Helius في نقطة الفشل الأكثر تكراراً. عند فشله (لا مفتاح، 429،
-    # إلخ)، نتراجع تلقائياً لمصدر RPC الأصلي كاحتياطي.
-    solscan_result = await get_token_holders_solscan(mint_address)
+    # ✅ تم استبدال Solscan 401 بـ GoPlus (معطّل مؤقتاً)
+    solscan_result = {"items": []}
     if solscan_result["items"]:
         holder_data_available = True
         non_lp_holder_pcts = []
@@ -255,7 +252,8 @@ async def check_organic_growth(mint_address: str, holders_at_add: int) -> dict:
     إصلاح جذري سابق (لا يزال قائماً): فشل تقني في القياس (كلا المصدرين)
     لا يُحتسَب كـ"نمو صفري" — بل "لم نتمكن من الحكم بعد" (data_available).
     """
-    solscan_result = await get_token_holders_solscan(mint_address, limit=1)  # نحتاج فقط "total"
+    # ✅ Solscan 401 معطّل - انتقل مباشرة للمصدر الاحتياطي
+    solscan_result = {"total_holders": None}
     if solscan_result["total_holders"] is not None:
         current_holders = solscan_result["total_holders"]
         data_available = True
@@ -448,8 +446,8 @@ async def evaluate_holder_velocity_entry(entry: dict) -> Optional[tuple[str, str
     if age_seconds < FAST_TRACK.min_age_seconds_before_momentum_check:
         return None
 
-    solscan_result = await get_token_holders_solscan(entry["mint_address"], limit=1)
-    total_holders = solscan_result["total_holders"]
+    # ✅ Solscan 401 معطّل - أرجع None (fail-open)
+    total_holders = None
     if total_holders is None:
         return None  # فشل تقني (لا مفتاح/429/إلخ) — لا قرار، fail-open كامل
 
