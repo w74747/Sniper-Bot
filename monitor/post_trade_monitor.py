@@ -18,6 +18,7 @@ from db import trades as db
 from alerts import notifier
 from filters.onchain_filters import parse_spl_mint_account, KNOWN_BURN_ADDRESSES
 from filters.sell_simulation import simulate_sell, evaluate_simulation_result
+from filters.honeypot_detector import check_early_dump
 from trading.executor import execute_emergency_sell, execute_normal_sell, execute_partial_sell
 from trading.swap_client import get_jupiter_quote, get_wallet_token_balance, load_wallet_keypair, SOL_MINT_ADDRESS
 from utils.solana_rpc import get_account_info_base64, get_token_largest_accounts
@@ -264,6 +265,22 @@ async def monitor_single_trade(trade: dict):
             _profit_tiers_triggered.pop(trade_id, None)
             _free_ride_recovered_sol.pop(trade_id, None)
             return
+
+        # ✅ فحص honeypot/dump مبكر (أول دقيقتين)
+        trade_age_seconds = time.time() - (trade.get("entry_timestamp") or time.time())
+        if trade_age_seconds < 120:  # أول دقيقتين
+            is_safe, dump_reason = await check_early_dump(
+                trade["mint_address"],
+                timeframe_seconds=120,
+                max_drop_pct=25.0
+            )
+            if not is_safe:
+                logger.warning(f"⚠️ كشف dump مريب للصفقة {trade_id}: {dump_reason}")
+                recovered = _free_ride_recovered_sol.pop(trade_id, 0.0)
+                await execute_emergency_sell(trade, dump_reason, extra_proceeds_sol=recovered)
+                _peak_sol_value.pop(trade_id, None)
+                _profit_tiers_triggered.pop(trade_id, None)
+                return
 
         # الطبقة 1: فحص on-chain قاطع (تلاعب تقني) → إغلاق طارئ فوري
         should_close, reason = await check_onchain_signals(trade)
