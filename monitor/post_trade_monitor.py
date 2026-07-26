@@ -21,8 +21,13 @@ from filters.sell_simulation import simulate_sell, evaluate_simulation_result
 from trading.executor import execute_emergency_sell, execute_normal_sell, execute_partial_sell
 from trading.swap_client import get_jupiter_quote, get_wallet_token_balance, load_wallet_keypair, SOL_MINT_ADDRESS
 from utils.solana_rpc import get_account_info_base64, get_token_largest_accounts
+from utils.profit_calculator import ProfitCalculator
+from utils.price_fetcher import get_current_price
 
 logger = logging.getLogger("post_trade_monitor")
+
+# ✅ مثيل حساب الأرباح الواقعي مع جميع الرسوم
+profit_calculator = ProfitCalculator()
 
 # يتتبع أعلى قيمة SOL "قابلة للتحقق فعلياً" (عبر عرض Jupiter الحقيقي، وليس
 # سعر DexScreener اللحظي) شوهدت لكل صفقة منذ فتحها — يُستخدم لوقف الخسارة
