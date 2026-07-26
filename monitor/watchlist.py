@@ -30,6 +30,7 @@ from db.trades import (
     is_symbol_blocklisted,
 )
 from trading.executor import execute_buy
+from filters.honeypot_detector import detect_honeypot
 from trading.swap_client import load_wallet_keypair
 from filters.reputation import evaluate_reputation
 from filters.sell_simulation import simulate_sell, evaluate_simulation_result
@@ -707,6 +708,18 @@ async def _execute_approval(
             f"📏 [{entry['symbol']}] تحجيم الصفقة: مضاعف {size_multiplier:.2f}x "
             f"(زخم {momentum_strength_pct:.1f}%) — {capital_sol:.4f} SOL بدل {base_capital_sol:.4f} SOL"
         )
+    
+    # ✅ فحص حاسم: honeypot/rug pull detection
+    is_safe, honeypot_reason = await detect_honeypot(
+        entry["mint_address"],
+        min_liquidity_usd=5000.0,
+        max_price_drop_pct=30.0
+    )
+    
+    if not is_safe:
+        logger.warning(f"❌ [{entry['symbol']}] رفض: {honeypot_reason}")
+        return
+    
     await execute_buy(
         entry["mint_address"], entry["symbol"], entry["pool_address"],
         capital_sol=capital_sol,
