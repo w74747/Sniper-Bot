@@ -268,6 +268,8 @@ async def _rpc_call_with_retry(method: str, params_without_config: list, extra_c
     غلاف عام لإعادة المحاولة مع commitment=confirmed، لأي استعلام قد يُطلب
     فوراً بعد اكتشاف حساب/عملة جديدة جداً لم تُفهرَس بعد على بعض المزودين.
     يستخدم التناوب المُرتَّب حسب صحة كل مزود.
+    
+    ✅ تحديث: exponential backoff ذكي (0.8s → 1.6s → 3.2s → 6.4s → 12.8s)
     """
     config = {"commitment": "confirmed"}
     if extra_config:
@@ -289,7 +291,9 @@ async def _rpc_call_with_retry(method: str, params_without_config: list, extra_c
             return result
 
         if attempt < max_retries:
-            await asyncio.sleep(retry_delay)
+            # ✅ exponential backoff: 0.8s * (2 ^ (attempt-1))
+            exponential_delay = retry_delay * (2 ** (attempt - 1))
+            await asyncio.sleep(exponential_delay)
 
     if last_error:
         raise last_error
