@@ -217,7 +217,7 @@ class FilterThresholds:
     # 2) عدم شبه بونزي في التوزيع
     max_dev_wallet_pct: float = 15.0              # ✅ تخفيف من 8% → 15% (دخول صفقات أكثر)
     max_single_holder_pct: float = 20.0           # ✅ تخفيف من 8% → 20% (قبول محافظ أكبر)
-    max_top10_holders_combined_pct: float = 20.0  # أقصى نسبة لأعلى 10 حاملين مجتمعين (عدا LP) —
+    max_top10_holders_combined_pct: float = 35.0  # ✅ تخفيف من 20% → 35% (قبول عملات أكثر)
                                                    # حماية من تنسيق بيع جماعي حتى لو كان كل حامل
                                                    # فردياً ضمن الحد المسموح (مستوحى من عقلية الخبراء)
     forbid_referral_mechanics: bool = True       # رفض أي عقد فيه دالة "إحالة/عمولة" مبنية داخلياً
