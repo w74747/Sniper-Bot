@@ -124,7 +124,27 @@ async def _get_session() -> aiohttp.ClientSession:
 # قاموس بسيط في الذاكرة: endpoint -> {"score": نقاط صحة, "last_failure": توقيت}
 # النقاط تزيد عند النجاح وتنخفض عند الفشل — نُرتّب المحاولات تنازلياً حسب
 # النقاط، فيُجرَّب المزود الأكثر موثوقية مؤخراً أولاً دائماً.
+#
+# إصلاح حرج: كانت عقوبة الفشل (-3) أكبر بـ3 أضعاف من مكافأة النجاح (+1)،
+# بدون أي أفضلية أساسية لـHelius (مزودنا المدفوع عالي الحصة 10M/شهر) —
+# هذا أنتج فعلياً "دوامة هابطة": أي ضغط عابر على Helius يُنزل نقاطه بسرعة
+# تفوق قدرته على التعافي، فيبدأ النظام بتفضيل api.mainnet-beta.solana.com
+# العام (أضعف بكثير، حد طلبات أدنى بكثير) — وهذا بالضبط ما لاحظناه فعلياً
+# في تقارير DeepSeek المتكررة (429 من الرابط العام تحديداً لساعات متواصلة،
+# وتوقف شبه تام لفتح صفقات جديدة). الإصلاح: أفضلية أساسية دائمة لـHelius
+# لا تُمحى بفشل عابر، + تخفيف عقوبة الفشل لتتناسب مع مكافأة النجاح.
 _endpoint_health: dict = {}
+
+
+def _base_priority_score(endpoint: str) -> float:
+    """أفضلية أساسية ثابتة حسب نوع المزود — Helius (مدفوع، حصة عالية)
+    يبدأ دائماً بأفضلية كبيرة على المزودين المجانيين العامين، بحيث لا
+    يُزاح بسهولة بفشل عابر مهما تراكم."""
+    if "helius" in endpoint.lower():
+        return 15.0
+    if "mainnet-beta.solana.com" in endpoint.lower():
+        return -15.0  # المزود العام الأضعف — أفضلية سلبية دائمة، آخر خيار حرفياً
+    return 0.0
 
 
 def _record_success(endpoint: str):
@@ -134,15 +154,21 @@ def _record_success(endpoint: str):
 
 def _record_failure(endpoint: str):
     h = _endpoint_health.setdefault(endpoint, {"score": 0.0, "last_failure": 0.0})
-    h["score"] = max(h["score"] - 3.0, -10.0)  # الفشل يُعاقَب أشد من مكافأة النجاح
+    h["score"] = max(h["score"] - 1.5, -10.0)  # خُفِّضت من -3.0 — تناسب أقرب مع مكافأة النجاح (+1)
     h["last_failure"] = time.time()
 
 
 def _ranked_endpoints(endpoints: list) -> list:
-    """يرجع نفس قائمة المزودين، لكن مُرتّبة من الأصح صحةً إلى الأقل — بدل الترتيب الثابت الأعمى."""
+    """يرجع نفس قائمة المزودين، لكن مُرتّبة من الأصح صحةً إلى الأقل — بدل
+    الترتيب الثابت الأعمى. تجمع بين الأفضلية الأساسية الدائمة (نوع المزود)
+    والنقاط الديناميكية (الأداء الفعلي الأخير) معاً."""
     if not endpoints:
         return endpoints
-    return sorted(endpoints, key=lambda e: _endpoint_health.get(e, {}).get("score", 0.0), reverse=True)
+    return sorted(
+        endpoints,
+        key=lambda e: _base_priority_score(e) + _endpoint_health.get(e, {}).get("score", 0.0),
+        reverse=True,
+    )
 
 
 async def rpc_call(method: str, params: list, timeout: int = 20, max_retries: int = 3, endpoint: str = None) -> dict:
