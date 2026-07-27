@@ -191,7 +191,7 @@ async def monitor_single_trade_v2(trade: dict):
         danger_monitor.stop()
 
 
-async def run_post_trade_monitor_v2():
+async def run_monitor_loop():
     """
     ✅ حلقة المراقبة الرئيسية - V2
     مراقبة جميع الصفقات المفتوحة
