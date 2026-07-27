@@ -12,6 +12,8 @@ from utils.rugcheck_client import get_token_report
 from trading.swap_client import get_jupiter_quote, SOL_MINT_ADDRESS
 from utils.gmgn_client import get_gmgn_token_data, get_gmgn_rug_probability
 from utils.solscan_client import get_token_holders_solscan
+from db.trades import is_symbol_blocklisted
+from config.settings import SYMBOL_BLOCKLIST_MAX_OCCURRENCES
 
 logger = logging.getLogger("entry_validator_v2")
 
@@ -26,6 +28,12 @@ async def validate_entry_comprehensive(
     Returns:
         (approved, reason)
     """
+    
+    # الفحص الأولي: قائمة الحظر (أعلى أولوية)
+    symbol = entry_data.get("symbol", mint_address[:8])
+    is_blocked, block_count = await is_symbol_blocklisted(symbol, SYMBOL_BLOCKLIST_MAX_OCCURRENCES)
+    if is_blocked:
+        return False, f"🚫 العملة محظورة (حدثت {block_count} خسائر كارثية سابقاً)"
     
     # الطبقة 1: السيولة الفعلية
     liquidity_ok, liq_reason = await check_real_liquidity(mint_address)
