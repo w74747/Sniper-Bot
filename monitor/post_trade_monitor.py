@@ -8,14 +8,11 @@ import asyncio
 import time
 from typing import Optional
 
-from db import log_handler
-from db import db_queries as db
+from db import trades
 from monitor.exit_signals import DangerSignalMonitor, SignalType
 from trading.exit_strategy import SmartExitStrategy, get_price_safely
 
 logger = logging.getLogger("post_trade_monitor")
-
-
 
 
 async def monitor_single_trade_v2(trade: dict):
@@ -62,7 +59,7 @@ async def monitor_single_trade_v2(trade: dict):
             # فحص 1: الصفقة لا تزال مفتوحة؟
             # ─────────────────────────────────────────────────────────────
             
-            open_trades = await db.get_open_trades()
+            open_trades = await trades.get_open_trades()
             if not any(t["id"] == trade_id for t in open_trades):
                 logger.info(f"✅ الصفقة {trade_id} لم تعد مفتوحة - إيقاف المراقبة")
                 danger_monitor.stop()
@@ -95,10 +92,13 @@ async def monitor_single_trade_v2(trade: dict):
                     )
                     
                     # تحديث الصفقة كمغلقة
-                    await db.close_trade(
-                        trade_id,
-                        reason=f"🔴 إغلاق طارئ: {signal_type.value}",
-                        exit_reason="EMERGENCY_EXIT"
+                    await trades.record_exit(
+                        trade_id=trade_id,
+                        exit_price=last_price or 0,
+                        proceeds_sol=exit_strategy.total_proceeds,
+                        close_reason=f"🔴 إغلاق طارئ: {signal_type.value}",
+                        tx_hash_exit="",
+                        flagged=True
                     )
                     
                     danger_monitor.stop()
@@ -139,10 +139,13 @@ async def monitor_single_trade_v2(trade: dict):
                         if exit_strategy.remaining_amount <= 0:
                             logger.info(f"✅ جميع المراحل مكتملة - إغلاق الصفقة")
                             
-                            await db.close_trade(
-                                trade_id,
-                                reason="✅ إغلاق كامل (جميع المراحل)",
-                                exit_reason="STAGED_EXIT_COMPLETE"
+                            await trades.record_exit(
+                                trade_id=trade_id,
+                                exit_price=last_price,
+                                proceeds_sol=exit_strategy.total_proceeds,
+                                close_reason="✅ إغلاق كامل (جميع المراحل)",
+                                tx_hash_exit="",
+                                flagged=False
                             )
                             
                             danger_monitor.stop()
@@ -168,10 +171,13 @@ async def monitor_single_trade_v2(trade: dict):
                         current_price=last_price
                     )
                     
-                    await db.close_trade(
-                        trade_id,
-                        reason=f"🔴 وقف خسارة قاسي ({pnl:.1f}%)",
-                        exit_reason="HARD_STOP_LOSS"
+                    await trades.record_exit(
+                        trade_id=trade_id,
+                        exit_price=last_price,
+                        proceeds_sol=exit_strategy.total_proceeds,
+                        close_reason=f"🔴 وقف خسارة قاسي ({pnl:.1f}%)",
+                        tx_hash_exit="",
+                        flagged=True
                     )
                     
                     danger_monitor.stop()
@@ -198,7 +204,7 @@ async def run_post_trade_monitor_v2():
         while True:
             try:
                 # جلب الصفقات المفتوحة
-                open_trades = await db.get_open_trades()
+                open_trades = await trades.get_open_trades()
                 
                 if not open_trades:
                     logger.debug("لا توجد صفقات مفتوحة حالياً")
