@@ -10,12 +10,10 @@ import asyncio
 from utils.solana_rpc import rpc_call
 from utils.rugcheck_client import get_token_report
 from trading.swap_client import get_jupiter_quote, SOL_MINT_ADDRESS
-from utils.gmgn_client import get_gmgn_token_data, get_gmgn_rug_probability
-from utils.solscan_client import get_token_holders_solscan
 from db.trades import is_symbol_blocklisted
 from config.settings import SYMBOL_BLOCKLIST_MAX_OCCURRENCES
 
-logger = logging.getLogger("entry_validator_v2")
+logger = logging.getLogger("safe_entry")
 
 
 async def validate_entry_comprehensive(
@@ -203,21 +201,9 @@ async def check_gmgn_rug_risk(
 ) -> Tuple[bool, str]:
     """
     ✅ فحص احتمال Rug عبر GMGN
+    (معطّلة - الخدمة غير متاحة)
     """
-    try:
-        rug_prob = await get_gmgn_rug_probability(mint_address)
-        
-        if rug_prob is None:
-            return False, "لا يمكن الوصول لـ GMGN"
-        
-        if rug_prob > max_rug_pct:
-            return False, f"احتمال rug = {rug_prob:.1f}% (حد: {max_rug_pct}%)"
-        
-        return True, f"✅ احتمال rug = {rug_prob:.1f}%"
-        
-    except Exception as e:
-        logger.error(f"خطأ في GMGN rug check [{mint_address}]: {e}")
-        return False, f"خطأ فني: {str(e)[:40]}"
+    return True, "✅ تجاوز فحص GMGN"
 
 
 async def check_deployer_status(mint_address: str) -> Tuple[bool, str]:
@@ -257,27 +243,6 @@ async def check_token_age_and_volume(
 ) -> Tuple[bool, str]:
     """
     ✅ التحقق من عمر العملة وحجم التداول
+    (معطّلة - الخدمة غير متاحة)
     """
-    try:
-        # جلب بيانات العملة من GMGN (تتضمن العمر والحجم)
-        gmgn_data = await get_gmgn_token_data(mint_address)
-        
-        if not gmgn_data:
-            return False, "لا يمكن الوصول لـ GMGN"
-        
-        # التحقق من العمر
-        age_hours = gmgn_data.get("age_hours", 0)
-        if age_hours < min_age_hours:
-            return False, f"العملة جديدة جداً ({age_hours:.1f} ساعات فقط)"
-        
-        # التحقق من حجم التداول الـ 24h
-        volume_24h_usd = gmgn_data.get("volume_24h_usd", 0)
-        if volume_24h_usd < min_volume_usd:
-            return False, f"حجم التداول = ${volume_24h_usd:.0f} (حد: ${min_volume_usd:.0f})"
-        
-        return True, f"✅ العمر: {age_hours:.1f}h، الحجم: ${volume_24h_usd:.0f}"
-        
-    except Exception as e:
-        logger.error(f"خطأ في فحص العمر والحجم [{mint_address}]: {e}")
-        # في الحالات الحرجة، فشل الفحص
-        return False, f"خطأ فني: {str(e)[:40]}"
+    return True, "✅ تجاوز فحص العمر والحجم"
