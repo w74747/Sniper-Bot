@@ -11,9 +11,8 @@ from enum import Enum
 
 from utils.solana_rpc import get_wallet_sol_balance
 from trading.swap_client import get_jupiter_quote, SOL_MINT_ADDRESS
-from utils.gmgn_client import get_gmgn_smart_money_signal, get_gmgn_large_sellers
 
-logger = logging.getLogger("danger_signals")
+logger = logging.getLogger("exit_signals")
 
 
 class SignalType(Enum):
@@ -255,29 +254,8 @@ class DangerSignalMonitor:
     async def monitor_smart_money_exit(self) -> Optional[Tuple[SignalType, str]]:
         """
         مراقبة GMGN Smart Money Exit Signal
+        (معطّلة - الدالة غير متوفرة)
         """
-        try:
-            while self.active:
-                try:
-                    signal = await get_gmgn_smart_money_signal(self.mint_address)
-                    
-                    if signal and signal.get('exit_signal'):
-                        confidence = signal.get('confidence', 0)
-                        logger.warning(f"🟢 الأموال الذكية تخرج (ثقة: {confidence})")
-                        return (SignalType.SMART_MONEY_EXIT,
-                               f"أموال ذكية تخرج (ثقة: {confidence})")
-                    
-                    await asyncio.sleep(2)
-                
-                except asyncio.CancelledError:
-                    break
-                except Exception as e:
-                    logger.debug(f"خطأ في GMGN: {e}")
-                    await asyncio.sleep(3)
-        
-        except asyncio.CancelledError:
-            pass
-        
         return None
     
     # ─────────────────────────────────────────────────────────────
@@ -287,30 +265,8 @@ class DangerSignalMonitor:
     async def monitor_known_entity_sell(self) -> Optional[Tuple[SignalType, str]]:
         """
         مراقبة بيع من محافظ معروفة (whales, MEV bots, etc)
+        (معطّلة - الدالة غير متوفرة)
         """
-        try:
-            while self.active:
-                try:
-                    whales = await get_gmgn_large_sellers(self.mint_address)
-                    
-                    for whale in whales:
-                        if whale.get('is_known_entity'):
-                            entity_type = whale.get('entity_type', 'Unknown')
-                            logger.warning(f"🟢 كيان معروف يبيع: {entity_type}")
-                            return (SignalType.KNOWN_ENTITY_SELL,
-                                   f"كيان معروف يبيع: {entity_type}")
-                    
-                    await asyncio.sleep(2)
-                
-                except asyncio.CancelledError:
-                    break
-                except Exception as e:
-                    logger.debug(f"خطأ في مراقبة الكيانات: {e}")
-                    await asyncio.sleep(3)
-        
-        except asyncio.CancelledError:
-            pass
-        
         return None
     
     # ─────────────────────────────────────────────────────────────
