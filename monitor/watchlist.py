@@ -31,6 +31,7 @@ from db.trades import (
 )
 from trading.executor import execute_buy
 from filters.honeypot_detector import detect_honeypot
+from filters.safe_entry import validate_entry_comprehensive  # ✅ Safe Entry Filters
 from trading.swap_client import load_wallet_keypair
 from filters.reputation import evaluate_reputation
 from filters.sell_simulation import simulate_sell, evaluate_simulation_result
