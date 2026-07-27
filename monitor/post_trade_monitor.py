@@ -8,13 +8,14 @@ import asyncio
 import time
 from typing import Optional
 
-from db.log_handler import LogHandler
+from db import log_handler
 from db import db_queries as db
-from monitor.danger_signals import DangerSignalMonitor, SignalType
-from trading.smart_exit import SmartExitStrategy, get_price_safely
-from utils.solscan_client import get_token_holders_solscan
+from monitor.exit_signals import DangerSignalMonitor, SignalType
+from trading.exit_strategy import SmartExitStrategy, get_price_safely
 
-logger = logging.getLogger("post_trade_monitor_v2")
+logger = logging.getLogger("post_trade_monitor")
+
+
 
 
 async def monitor_single_trade_v2(trade: dict):
