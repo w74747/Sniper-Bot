@@ -215,9 +215,9 @@ class FilterThresholds:
     min_lp_burned_or_locked_pct: float = 95.0    # % من LP يجب أن تكون محروقة/مقفلة
 
     # 2) عدم شبه بونزي في التوزيع
-    max_dev_wallet_pct: float = 15.0              # ✅ تخفيف من 8% → 15% (دخول صفقات أكثر)
-    max_single_holder_pct: float = 20.0           # ✅ تخفيف من 8% → 20% (قبول محافظ أكبر)
-    max_top10_holders_combined_pct: float = 35.0  # ✅ تخفيف من 20% → 35% (قبول عملات أكثر)
+    max_dev_wallet_pct: float = 5.0              # ✅ تشديد من 15% → 5% (Safe Entry V2)
+    max_single_holder_pct: float = 8.0           # ✅ تشديد من 20% → 8%
+    max_top10_holders_combined_pct: float = 12.0  # ✅ تشديد من 35% → 12%
                                                    # حماية من تنسيق بيع جماعي حتى لو كان كل حامل
                                                    # فردياً ضمن الحد المسموح (مستوحى من عقلية الخبراء)
     forbid_referral_mechanics: bool = True       # رفض أي عقد فيه دالة "إحالة/عمولة" مبنية داخلياً
@@ -311,7 +311,7 @@ class MomentumSettings:
     min_buy_sell_ratio_m5: float = 1.2         # نسبة الشراء للبيع
     min_volume_m5_usd: float = 1000.0          # حد أدنى لحجم التداول
     min_unique_buys_m5: int = 6                # حد أدنى لعدد معاملات الشراء
-    min_liquidity_usd: float = 5000.0           # رُفِع من $2,000 — عملات بسيولة أقل من هذا
+    min_liquidity_usd: float = 20000.0           # ✅ رفع من $5,000 → $20,000 (Safe Entry V2)
                                                  # أثبتت عملياً انهياراً كارثياً (73-100%) خلال
                                                  # دقائق قليلة فقط من الدخول (سيولة ضحلة جداً،
                                                  # يكفي بائع واحد متوسط لتفريغها بالكامل)
