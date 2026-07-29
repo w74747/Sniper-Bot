@@ -110,22 +110,22 @@ class DailyDeepSeekReport:
             
             patterns = {}
             for log in error_logs:
-                error_type = log.get("error_type", "unknown")
+                error_type = log.get("logger_name", "unknown")
                 if error_type not in patterns:
                     patterns[error_type] = {
                         "count": 0,
                         "times": [],
-                        "components": []
+                        "messages": []
                     }
                 
                 patterns[error_type]["count"] += 1
                 patterns[error_type]["times"].append(log.get("timestamp"))
-                patterns[error_type]["components"].append(log.get("component"))
+                patterns[error_type]["messages"].append(log.get("message"))
             
             # تحليل الأنماط
             for error_type, data in patterns.items():
                 data["frequency"] = self._calculate_frequency(data["times"])
-                data["affected_components"] = list(set(data["components"]))
+                data["affected_components"] = list(set(data["messages"][:5]))  # أول 5 رسائل
             
             return patterns
         except Exception as e:
