@@ -26,7 +26,7 @@ async def monitor_single_trade(trade: Dict):
         mint_address = trade.get("mint_address")
         
         # 1. فحص الإشارات الخطرة
-        danger_monitor = DangerSignalMonitor(trade)
+        danger_monitor = DangerSignalMonitor(trade_id, mint_address)
         danger_signals = await danger_monitor.check_all_signals()
         
         # 2. إذا كان هناك خطر
