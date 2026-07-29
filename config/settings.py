@@ -98,6 +98,7 @@ SOLSCAN_API_BASE = "https://pro-api.solscan.io/v2.0"
 # لصفقاتنا المفتوحة عبر WebSocket). بدونه، يستمر subscribeNewToken (اكتشاف
 # العملات الجديدة) بالعمل مجاناً كما هو — فقط المراقبة اللحظية تحديداً تتطلبه.
 PUMPPORTAL_API_KEY = os.getenv("PUMPPORTAL_API_KEY", "").strip()
+PUMPPORTAL_WEBSOCKET = os.getenv("PUMPPORTAL_WEBSOCKET", "wss://api.pumpportal.io/")
 
 # RugCheck.xyz — مجاني بالكامل، يكتشف المطلعين (Insiders) والمحافظ المُجمَّعة
 # (Bundlers) خصيصاً لعملات Solana meme. لا يتطلب مفتاحاً للعمل الأساسي؛
