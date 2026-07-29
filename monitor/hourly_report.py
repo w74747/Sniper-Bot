@@ -158,7 +158,7 @@ class HourlyReportSystem:
             
             error_counts = {}
             for log in recent_logs:
-                error_type = log.get("error_type", "unknown")
+                error_type = log.get("logger_name", "unknown")
                 error_counts[error_type] = error_counts.get(error_type, 0) + 1
             
             # ترتيب حسب التكرار
