@@ -627,7 +627,7 @@ async def get_error_logs_recent(hours: int = 24, limit: int = 100):
                 id, timestamp, logger_name, message, level
             FROM app_logs
             WHERE level = 'ERROR' 
-                AND timestamp > NOW() - INTERVAL '1 hour' * $1
+                AND timestamp > NOW() - MAKE_INTERVAL(hours => $1)
             ORDER BY timestamp DESC
             LIMIT $2
         """
