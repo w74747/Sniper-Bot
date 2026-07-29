@@ -17,7 +17,6 @@ logger = logging.getLogger("db_trades")
 # إلا خلال هذه المدة فقط — عملات meme قد تصعد على عدة موجات متكررة.
 MIN_COOLDOWN_HOURS_AFTER_NORMAL_CLOSE = 6
 
-
 async def init_db():
     """ينشئ كل الجداول (إن لم تكن موجودة) في القاعدة الأساسية والاحتياطية معاً."""
     schema = """
@@ -110,7 +109,6 @@ async def init_db():
         except Exception as e:
             logger.error(f"⚠️ فشل إنشاء البنية في القاعدة {name}: {e}")
 
-
 async def record_screening_result(mint_address, symbol, dex, decision, stage, reason):
     await pool.execute(
         """INSERT INTO screening_log
@@ -118,7 +116,6 @@ async def record_screening_result(mint_address, symbol, dex, decision, stage, re
            VALUES ($1, $2, $3, $4, $5, $6, $7)""",
         time.time(), mint_address, symbol, dex, decision, stage, reason,
     )
-
 
 async def get_screening_stats(hours: int = 24) -> dict:
     cutoff = time.time() - (hours * 3600)
@@ -152,7 +149,6 @@ async def get_screening_stats(hours: int = 24) -> dict:
         "added_to_watchlist": [dict(r) for r in added_list],
     }
 
-
 @dataclass
 class TradeRecord:
     mint_address: str
@@ -169,7 +165,6 @@ class TradeRecord:
         if self.entry_timestamp is None:
             self.entry_timestamp = time.time()
 
-
 async def record_entry(trade: TradeRecord) -> int:
     row = await pool.fetchrow(
         """INSERT INTO trades
@@ -181,7 +176,6 @@ async def record_entry(trade: TradeRecord) -> int:
         trade.filter_report, trade.tx_hash_entry, trade.strategy,
     )
     return row["id"]
-
 
 async def record_exit(trade_id, exit_price, proceeds_sol, close_reason, tx_hash_exit, flagged=False):
     row = await pool.fetchrow(
@@ -202,15 +196,12 @@ async def record_exit(trade_id, exit_price, proceeds_sol, close_reason, tx_hash_
     )
     return profit_loss
 
-
 async def record_alert(trade_id, alert_type, message, requires_human_confirmation=False):
     await pool.execute(
         """INSERT INTO alerts (trade_id, timestamp, alert_type, message,
            requires_human_confirmation) VALUES ($1, $2, $3, $4, $5)""",
         trade_id, time.time(), alert_type, message, int(requires_human_confirmation),
     )
-
-
 
 async def backfill_symbol_blocklist(loss_threshold_pct: float = -80.0) -> int:
     """
@@ -237,7 +228,6 @@ async def backfill_symbol_blocklist(loss_threshold_pct: float = -80.0) -> int:
             count += 1
     return count
 
-
 async def add_to_symbol_blocklist(symbol: str, mint_address: str) -> int:
     """
     يُضيف اسماً لقائمة الحظر الدائمة (أو يزيد عدّاده إن كان موجوداً بالفعل)
@@ -256,7 +246,6 @@ async def add_to_symbol_blocklist(symbol: str, mint_address: str) -> int:
     """, symbol, now, mint_address)
     return row["catastrophic_count"] if row else 1
 
-
 async def is_symbol_blocklisted(symbol: str, max_occurrences: int = 1) -> tuple[bool, int]:
     """
     فحص سريع (بحث بمفتاح فريد مفهرَس تلقائياً) — هل هذا الاسم محظور دائماً؟
@@ -269,7 +258,6 @@ async def is_symbol_blocklisted(symbol: str, max_occurrences: int = 1) -> tuple[
         return False, 0
     count = row["catastrophic_count"]
     return count >= max_occurrences, count
-
 
 async def get_recent_closed_trades_detail(hours: int = 1, limit: int = 30) -> list:
     """
@@ -307,7 +295,6 @@ async def get_recent_closed_trades_detail(hours: int = 1, limit: int = 30) -> li
         })
     return result
 
-
 async def get_strategy_trade_counts_all() -> dict:
     """
     يرجع عدد كل صفقة (مفتوحة + مغلقة معاً) لكل استراتيجية — يُستخدَم للتوزيع
@@ -322,7 +309,6 @@ async def get_strategy_trade_counts_all() -> dict:
         result[key] = result.get(key, 0) + row["c"]
     return result
 
-
 async def record_migration(mint_address: str, symbol: str, deployer_wallet: str) -> None:
     """يُسجَّل عند اكتشاف تخرّج عملة Pump.fun إلى Raydium/PumpSwap — بداية فترة المراقبة طويلة الأمد."""
     await pool.execute("""
@@ -330,7 +316,6 @@ async def record_migration(mint_address: str, symbol: str, deployer_wallet: str)
         VALUES ($1, $2, $3, $4, 'watching')
         ON CONFLICT (mint_address) DO NOTHING
     """, mint_address, symbol, deployer_wallet, time.time())
-
 
 async def get_matured_migrations(min_age_days: float, status: str = "watching") -> list:
     """يرجع العملات المُتخرِّجة التي تجاوزت الحد الأدنى لعمر النضج، ولم تُقيَّم بعد."""
@@ -340,12 +325,10 @@ async def get_matured_migrations(min_age_days: float, status: str = "watching") 
     """, status, cutoff_ts)
     return [dict(r) for r in rows]
 
-
 async def update_migration_status(mint_address: str, status: str) -> None:
     await pool.execute(
         "UPDATE long_term_watch SET status = $1 WHERE mint_address = $2", status, mint_address
     )
-
 
 async def cleanup_old_data(retention_days: int = 7, watchlist_retention_days: int = 14) -> dict:
     """
@@ -379,7 +362,6 @@ async def cleanup_old_data(retention_days: int = 7, watchlist_retention_days: in
         "app_logs_deleted": logs_deleted or 0,
         "watchlist_deleted": watchlist_deleted or 0,
     }
-
 
 async def get_performance_by_strategy() -> list:
     """
@@ -415,7 +397,6 @@ async def get_performance_by_strategy() -> list:
         })
     return result
 
-
 async def get_cumulative_performance() -> dict:
     row = await pool.fetchrow("""
         SELECT
@@ -440,7 +421,6 @@ async def get_cumulative_performance() -> dict:
         "total_capital_deployed_sol": row["total_capital_deployed_sol"] or 0.0,
         "win_rate_pct": win_rate,
     }
-
 
 async def get_monthly_performance() -> dict:
     """
@@ -477,7 +457,6 @@ async def get_monthly_performance() -> dict:
         "win_rate_pct": win_rate,
     }
 
-
 async def get_recent_logs(minutes: int = 60, level: str = None, limit: int = 500) -> list:
     """
     يرجع أحدث سجلات التطبيق مباشرة من قاعدة البيانات — بديل كامل عن الاعتماد
@@ -501,11 +480,9 @@ async def get_recent_logs(minutes: int = 60, level: str = None, limit: int = 500
         )
     return [dict(r) for r in rows]
 
-
 async def get_open_trades():
     rows = await pool.fetch("SELECT * FROM trades WHERE status = 'open'")
     return [dict(r) for r in rows]
-
 
 async def has_seen_mint_before(mint_address: str) -> bool:
     """
@@ -556,7 +533,7 @@ async def get_trade_by_id(trade_id: int):
         dict: بيانات الصفقة أو None
     """
     try:
-        pool = await get_pool()
+        
         query = """
             SELECT 
                 id, mint_address, symbol, entry_timestamp, exit_timestamp,
@@ -573,7 +550,6 @@ async def get_trade_by_id(trade_id: int):
         logger.error(f"خطأ في جلب الصفقة {trade_id}: {e}")
         return None
 
-
 async def get_closed_trades_recent(hours: int = 24, limit: int = 100):
     """
     جلب الصفقات المغلقة الحديثة
@@ -586,7 +562,7 @@ async def get_closed_trades_recent(hours: int = 24, limit: int = 100):
         list: قائمة الصفقات المغلقة
     """
     try:
-        pool = await get_pool()
+        
         query = """
             SELECT 
                 id, mint_address, symbol, entry_timestamp, exit_timestamp,
@@ -604,7 +580,6 @@ async def get_closed_trades_recent(hours: int = 24, limit: int = 100):
         logger.error(f"خطأ في جلب الصفقات المغلقة: {e}")
         return []
 
-
 async def get_trades_by_strategy(strategy: str, limit: int = 50):
     """
     جلب الصفقات حسب الاستراتيجية
@@ -617,7 +592,7 @@ async def get_trades_by_strategy(strategy: str, limit: int = 50):
         list: قائمة الصفقات
     """
     try:
-        pool = await get_pool()
+        
         query = """
             SELECT 
                 id, mint_address, symbol, entry_timestamp, exit_timestamp,
@@ -634,7 +609,6 @@ async def get_trades_by_strategy(strategy: str, limit: int = 50):
         logger.error(f"خطأ في جلب صفقات الاستراتيجية {strategy}: {e}")
         return []
 
-
 async def get_error_logs_recent(hours: int = 24, limit: int = 100):
     """
     جلب السجلات الخطأ الحديثة
@@ -647,7 +621,7 @@ async def get_error_logs_recent(hours: int = 24, limit: int = 100):
         list: قائمة الأخطاء
     """
     try:
-        pool = await get_pool()
+        
         query = """
             SELECT 
                 id, timestamp, component, error_type, message, level
@@ -663,7 +637,6 @@ async def get_error_logs_recent(hours: int = 24, limit: int = 100):
         logger.error(f"خطأ في جلب السجلات: {e}")
         return []
 
-
 async def save_trade_alert(trade_id: int, alert_type: str, message: str):
     """
     حفظ تنبيه لصفقة
@@ -674,7 +647,7 @@ async def save_trade_alert(trade_id: int, alert_type: str, message: str):
         message: نص التنبيه
     """
     try:
-        pool = await get_pool()
+        
         query = """
             INSERT INTO alerts (trade_id, timestamp, alert_type, message, requires_human_confirmation)
             VALUES ($1, EXTRACT(EPOCH FROM NOW()), $2, $3, 1)
@@ -683,7 +656,6 @@ async def save_trade_alert(trade_id: int, alert_type: str, message: str):
         logger.debug(f"✅ تم حفظ التنبيه للصفقة {trade_id}")
     except Exception as e:
         logger.error(f"خطأ في حفظ التنبيه: {e}")
-
 
 async def get_evaluation_history(trade_id: int, limit: int = 10):
     """
@@ -697,7 +669,7 @@ async def get_evaluation_history(trade_id: int, limit: int = 10):
         list: سجل التقييمات
     """
     try:
-        pool = await get_pool()
+        
         query = """
             SELECT 
                 timestamp, pnl_pct, pnl_sol, evaluation_type, recommendation
@@ -711,7 +683,6 @@ async def get_evaluation_history(trade_id: int, limit: int = 10):
     except Exception as e:
         logger.error(f"خطأ في جلب سجل التقييمات: {e}")
         return []
-
 
 async def save_evaluation_snapshot(
     trade_id: int,
@@ -733,7 +704,7 @@ async def save_evaluation_snapshot(
         age_hours: عمر الصفقة بالساعات
     """
     try:
-        pool = await get_pool()
+        
         query = """
             INSERT INTO trade_evaluations 
             (trade_id, timestamp, pnl_pct, pnl_sol, evaluation_type, recommendation, age_hours)
@@ -751,7 +722,6 @@ async def save_evaluation_snapshot(
     except Exception as e:
         logger.debug(f"خطأ في حفظ لقطة التقييم: {e}")
 
-
 # ============================================================================
 # إنشاء الجداول الجديدة (شغّل مرة واحدة)
 # ============================================================================
@@ -762,8 +732,7 @@ async def initialize_evaluation_tables():
     شغّل هذه الدالة مرة واحدة عند بدء البوت
     """
     try:
-        pool = await get_pool()
-        
+
         # جدول سجل التقييمات
         await pool.execute("""
             CREATE TABLE IF NOT EXISTS trade_evaluations (
@@ -783,7 +752,6 @@ async def initialize_evaluation_tables():
         
     except Exception as e:
         logger.error(f"خطأ في إنشاء جداول التقييم: {e}")
-
 
 # ============================================================================
 # استدعاء التهيئة في البدء
