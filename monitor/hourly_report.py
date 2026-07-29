@@ -12,7 +12,7 @@ from typing import Dict, List
 from db import trades as db
 from utils.solana_rpc import get_wallet_sol_balance
 from config.settings import WALLET_KEYPAIR_PATH
-from db.log_handler import load_wallet_keypair
+from trading.swap_client import load_wallet_keypair
 
 logger = logging.getLogger("hourly_report")
 
