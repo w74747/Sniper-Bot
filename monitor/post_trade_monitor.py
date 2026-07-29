@@ -27,24 +27,23 @@ async def monitor_single_trade(trade: Dict):
         
         # 1. فحص الإشارات الخطرة
         danger_monitor = DangerSignalMonitor(trade_id, mint_address)
-        danger_signals = await danger_monitor.check_all_signals()
+        triggered, signal_type, reason = await danger_monitor.run_all_monitors()
         
         # 2. إذا كان هناك خطر
-        if danger_signals:
-            for signal_type, details in danger_signals.items():
-                logger.warning(
-                    f"⚠️ إشارة خطر [{signal_type}] للصفقة {symbol}:\n"
-                    f"   {details}"
+        if triggered and signal_type:
+            logger.warning(
+                f"⚠️ إشارة خطر [{signal_type}] للصفقة {symbol}:\n"
+                f"   {reason}"
+            )
+            
+            # خروج طارئ فوري
+            try:
+                exit_strategy = SmartExitStrategy(trade)
+                await exit_strategy.execute_emergency_exit(
+                    danger_reason=f"{signal_type}: {reason}"
                 )
-                
-                # خروج طارئ فوري
-                try:
-                    exit_strategy = SmartExitStrategy(trade)
-                    await exit_strategy.execute_emergency_exit(
-                        danger_reason=f"{signal_type}: {details}"
-                    )
-                except Exception as e:
-                    logger.error(f"❌ خطأ في الخروج الطارئ: {e}")
+            except Exception as e:
+                logger.error(f"❌ خطأ في الخروج الطارئ: {e}")
             
             return  # انتقل للصفقة التالية
         
