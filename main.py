@@ -12,7 +12,7 @@ from config.settings import PUMPPORTAL_WEBSOCKET
 
 # المراقبة والتقييم
 from monitor.pumpportal_listener import run_pumpportal_listener
-from monitor.watchlist import run_watchlist_monitor
+from monitor.watchlist import run_watchlist_loop, run_fast_track_loop, run_established_liquid_loop
 from monitor.post_trade_monitor import run_monitor_loop
 from monitor.trades_evaluator import evaluator, run_periodic_evaluation
 from monitor.hourly_report import run_hourly_report_loop
@@ -68,8 +68,18 @@ async def main():
         
         # 2. مراقبة قائمة المراقبة
         asyncio.create_task(
-            run_watchlist_monitor(),
-            name="watchlist_monitor"
+            run_watchlist_loop(),
+            name="watchlist_loop"
+        ),
+        
+        asyncio.create_task(
+            run_fast_track_loop(),
+            name="fast_track_loop"
+        ),
+        
+        asyncio.create_task(
+            run_established_liquid_loop(),
+            name="established_liquid_loop"
         ),
         
         # 3. مراقبة الصفقات المفتوحة
