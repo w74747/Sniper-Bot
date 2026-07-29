@@ -1,235 +1,121 @@
 """
-✅ مراقب الصفقات V2 - نظام محسّن مع إشارات خطر فورية
-دمج كامل: الإشارات الـ 6 + الخروج المتدرج الذكي
+✅ post_trade_monitor.py المحدث - مع التقييم بعد كل تحديث
 """
 
 import logging
 import asyncio
 import time
-from typing import Optional
+from typing import Dict
+from datetime import datetime
 
-from db import trades
+from db import trades as db
 from monitor.exit_signals import DangerSignalMonitor, SignalType
 from trading.exit_strategy import SmartExitStrategy, get_price_safely
+from monitor.trades_evaluator import evaluator
 
 logger = logging.getLogger("post_trade_monitor")
 
 
-async def monitor_single_trade_v2(trade: dict):
+async def monitor_single_trade_v2(trade: Dict):
     """
-    ✅ مراقبة صفقة واحدة - النظام الجديد المحسّن
-    
-    منطق:
-    1. إنشاء مراقب الخطر (الـ 6 إشارات)
-    2. إنشاء استراتيجية الخروج الذكي
-    3. تشغيل المراقبة بالتوازي:
-       - إشارات الخطر (أولوية قصوى)
-       - الخروج التدريجي (عند الربح)
-    4. أول إشارة خطر = خروج طارئ فوري
+    ✅ مراقبة صفقة واحدة مع تقييم ذكي
     """
-    trade_id = trade["id"]
-    mint_address = trade["mint_address"]
-    symbol = trade.get("symbol", mint_address[:8])
-    
-    logger.info(
-        f"🟢 مراقبة صفقة جديدة\n"
-        f"   ID: {trade_id}\n"
-        f"   العملة: {symbol}\n"
-        f"   رأس المال: {trade.get('capital_used', 0):.4f} SOL"
-    )
-    
-    # إنشاء المراقب والاستراتيجية
-    danger_monitor = DangerSignalMonitor(
-        trade_id=trade_id,
-        mint_address=mint_address,
-        deployer_wallet=trade.get("deployer_wallet")
-    )
-    
-    exit_strategy = SmartExitStrategy(trade)
-    
-    # تتبع آخر سعر معروف
-    last_price = None
-    last_price_check = time.time()
-    
     try:
-        while True:
-            current_time = time.time()
-            
-            # ─────────────────────────────────────────────────────────────
-            # فحص 1: الصفقة لا تزال مفتوحة؟
-            # ─────────────────────────────────────────────────────────────
-            
-            open_trades = await trades.get_open_trades()
-            if not any(t["id"] == trade_id for t in open_trades):
-                logger.info(f"✅ الصفقة {trade_id} لم تعد مفتوحة - إيقاف المراقبة")
-                danger_monitor.stop()
-                break
-            
-            # ─────────────────────────────────────────────────────────────
-            # فحص 2: مراقب الخطر (أولوية قصوى)
-            # ─────────────────────────────────────────────────────────────
-            # تشغيل الإشارات الـ 6 بالتوازي (مع timeout قصير للفحص السريع)
-            
-            try:
-                # تشغيل مراقب الخطر للحصول على الإشارة الأولى
-                signal_triggered, signal_type, reason = await asyncio.wait_for(
-                    danger_monitor.run_all_monitors(),
-                    timeout=2.0  # فحص سريع كل ثانيتين
+        trade_id = trade.get("id")
+        symbol = trade.get("symbol", "unknown")
+        mint_address = trade.get("mint_address")
+        
+        # 1. فحص الإشارات الخطرة
+        danger_monitor = DangerSignalMonitor(trade)
+        danger_signals = await danger_monitor.check_all_signals()
+        
+        # 2. إذا كان هناك خطر
+        if danger_signals:
+            for signal_type, details in danger_signals.items():
+                logger.warning(
+                    f"⚠️ إشارة خطر [{signal_type}] للصفقة {symbol}:\n"
+                    f"   {details}"
                 )
                 
-                if signal_triggered and signal_type:
-                    # 🔴 إشارة خطر = خروج طارئ فوري
-                    logger.warning(f"🚨 إشارة خطر مكتشفة: {signal_type.value}")
-                    
-                    # جلب آخر سعر معروف
-                    if last_price is None:
-                        last_price = await get_price_safely(mint_address)
-                    
-                    # خروج طارئ
+                # خروج طارئ فوري
+                try:
+                    exit_strategy = SmartExitStrategy(trade)
                     await exit_strategy.execute_emergency_exit(
-                        danger_reason=f"{signal_type.value}: {reason}",
-                        current_price=last_price or 0
+                        danger_reason=f"{signal_type}: {details}"
                     )
-                    
-                    # تحديث الصفقة كمغلقة
-                    await trades.record_exit(
-                        trade_id=trade_id,
-                        exit_price=last_price or 0,
-                        proceeds_sol=exit_strategy.total_proceeds,
-                        close_reason=f"🔴 إغلاق طارئ: {signal_type.value}",
-                        tx_hash_exit="",
-                        flagged=True
-                    )
-                    
-                    danger_monitor.stop()
-                    break
+                except Exception as e:
+                    logger.error(f"❌ خطأ في الخروج الطارئ: {e}")
             
-            except asyncio.TimeoutError:
-                # انتهت المهلة الزمنية دون إشارة خطر = استمرّ
-                pass
+            return  # انتقل للصفقة التالية
+        
+        # 3. إذا لم يكن هناك خطر، تحقق من الخروج العادي
+        current_price = await get_price_safely(mint_address)
+        
+        if current_price > 0:
+            # استخدم نظام الخروج الذكي
+            try:
+                exit_strategy = SmartExitStrategy(trade)
+                
+                # تحقق من مراحل الخروج
+                should_exit, stage = await exit_strategy.evaluate_exit_stages(
+                    current_price=current_price
+                )
+                
+                if should_exit and stage:
+                    logger.info(
+                        f"📊 الصفقة {symbol}: الوصول إلى مرحلة الخروج\n"
+                        f"   المرحلة: {stage['stage_number']}\n"
+                        f"   السبب: {stage['reason']}"
+                    )
+                    
+                    # تنفيذ الخروج
+                    await exit_strategy.execute_stage_exit(stage, current_price)
+                
             except Exception as e:
-                logger.error(f"خطأ في مراقب الخطر: {e}")
-            
-            # ─────────────────────────────────────────────────────────────
-            # فحص 3: جلب السعر الحالي (كل ثانية)
-            # ─────────────────────────────────────────────────────────────
-            
-            if current_time - last_price_check >= 1.0:
-                last_price = await get_price_safely(mint_address)
-                last_price_check = current_time
-                
-                if last_price is None:
-                    await asyncio.sleep(0.5)
-                    continue
-            
-            # ─────────────────────────────────────────────────────────────
-            # فحص 4: الخروج التدريجي (عند الربح)
-            # ─────────────────────────────────────────────────────────────
-            
-            if last_price and last_price > 0:
-                stage = exit_strategy.get_stage_to_execute(last_price)
-                
-                if stage:
-                    # ✅ وصلنا لمرحلة ربح = تنفيذ البيع التدريجي
-                    try:
-                        await exit_strategy.execute_stage_exit(stage, last_price)
-                        logger.info(f"✅ بيع تدريجي تم (المرحلة {stage.stage_number})")
-                        
-                        # إذا انتهينا من جميع المراحل = اغلق الصفقة
-                        if exit_strategy.remaining_amount <= 0:
-                            logger.info(f"✅ جميع المراحل مكتملة - إغلاق الصفقة")
-                            
-                            await trades.record_exit(
-                                trade_id=trade_id,
-                                exit_price=last_price,
-                                proceeds_sol=exit_strategy.total_proceeds,
-                                close_reason="✅ إغلاق كامل (جميع المراحل)",
-                                tx_hash_exit="",
-                                flagged=False
-                            )
-                            
-                            danger_monitor.stop()
-                            break
-                    
-                    except Exception as e:
-                        logger.error(f"خطأ في البيع التدريجي: {e}")
-            
-            # ─────────────────────────────────────────────────────────────
-            # فحص 5: وقف خسارة قاسي (كحد أدنى)
-            # ─────────────────────────────────────────────────────────────
-            # إذا انخفضت > 20% من رأس المال الأصلي مباشرة
-            
-            if last_price and last_price > 0:
-                pnl = exit_strategy.get_current_pnl_pct(last_price)
-                
-                if pnl < -20 and exit_strategy.remaining_amount > 0:
-                    logger.warning(f"🔴 وقف خسارة قاسي: الخسارة {pnl:.1f}%")
-                    
-                    # خروج طارئ
-                    await exit_strategy.execute_emergency_exit(
-                        danger_reason=f"وقف خسارة قاسي ({pnl:.1f}%)",
-                        current_price=last_price
-                    )
-                    
-                    await trades.record_exit(
-                        trade_id=trade_id,
-                        exit_price=last_price,
-                        proceeds_sol=exit_strategy.total_proceeds,
-                        close_reason=f"🔴 وقف خسارة قاسي ({pnl:.1f}%)",
-                        tx_hash_exit="",
-                        flagged=True
-                    )
-                    
-                    danger_monitor.stop()
-                    break
-            
-            # انتظر قليلاً قبل الفحص التالي
-            await asyncio.sleep(0.5)
+                logger.error(f"❌ خطأ في البيع التدريجي: {e}")
+        
+        # 4. تقييم الصفقة بعد التحديث
+        # (لا نعطل المراقبة بسبب التقييم)
+        asyncio.create_task(
+            evaluator.evaluate_on_update(
+                trade_id=trade_id,
+                update_type="monitor"
+            )
+        )
     
     except Exception as e:
-        logger.error(f"❌ خطأ حرج في المراقبة: {e}")
-        danger_monitor.stop()
+        logger.error(f"❌ خطأ في مراقبة الصفقة {trade.get('symbol', 'unknown')}: {e}")
 
 
 async def run_monitor_loop():
     """
-    ✅ حلقة المراقبة الرئيسية - V2
-    مراقبة جميع الصفقات المفتوحة
+    ✅ حلقة المراقبة الرئيسية
+    مع التقييم الدوري
     """
-    logger.info("🚀 بدء مراقب الصفقات V2 (محسّن مع إشارات خطر)")
+    logger.info("🟢 بدء حلقة مراقبة الصفقات المفتوحة\n")
     
-    active_tasks = {}  # {trade_id: task}
-    
-    try:
-        while True:
-            try:
-                # جلب الصفقات المفتوحة
-                open_trades = await trades.get_open_trades()
-                
-                if not open_trades:
-                    logger.debug("لا توجد صفقات مفتوحة حالياً")
-                else:
-                    logger.info(f"📊 مراقبة {len(open_trades)} صفقات مفتوحة")
-                
-                # تشغيل مراقب لكل صفقة جديدة
-                for trade in open_trades:
-                    trade_id = trade["id"]
-                    
-                    if trade_id not in active_tasks:
-                        # تشغيل مراقب جديد
-                        task = asyncio.create_task(monitor_single_trade_v2(trade))
-                        active_tasks[trade_id] = task
-                
-                # تنظيف المهام المنتهية
-                for trade_id in list(active_tasks.keys()):
-                    if active_tasks[trade_id].done():
-                        del active_tasks[trade_id]
-                
-                await asyncio.sleep(2)  # فحص كل ثانيتين
+    while True:
+        try:
+            # جلب جميع الصفقات المفتوحة
+            open_trades = await db.get_open_trades()
             
-            except Exception as e:
-                logger.error(f"خطأ في حلقة المراقبة الرئيسية: {e}")
-                await asyncio.sleep(5)
-    
-    except KeyboardInterrupt:
-        logger.info("🛑 إيقاف مراقب الصفقات V2")
+            if open_trades:
+                logger.info(f"📊 مراقبة {len(open_trades)} صفقات مفتوحة")
+                
+                # مراقبة كل صفقة
+                monitor_tasks = [
+                    monitor_single_trade_v2(trade)
+                    for trade in open_trades
+                ]
+                
+                await asyncio.gather(*monitor_tasks, return_exceptions=True)
+            
+            else:
+                logger.debug("✅ لا توجد صفقات مفتوحة")
+            
+            # انتظر قبل الدورة التالية
+            await asyncio.sleep(10)
+        
+        except Exception as e:
+            logger.error(f"❌ خطأ في حلقة المراقبة: {e}")
+            await asyncio.sleep(10)
