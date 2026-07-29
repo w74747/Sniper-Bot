@@ -131,6 +131,9 @@ SYMBOL_BLOCKLIST_MAX_OCCURRENCES = 1  # حظر دائم بعد أول خسارة
 SOLANA_PUBLIC_RPC_URL = "https://api.mainnet-beta.solana.com"
 SOLANA_PUBLIC_WS_URL = "wss://api.mainnet-beta.solana.com"
 
+# مسار المحفظة: ملف JSON يحتوي على keypair للمحفظة
+WALLET_KEYPAIR_PATH = os.getenv("WALLET_KEYPAIR_PATH", "wallet.json")
+
 # المزود الأساسي المُستخدم فعلياً: Chainstack إن أُضيف في Railway، وإلا
 # Helius تلقائياً (بدون كسر أي شيء إن لم تُضِف Chainstack إطلاقاً). هذا هو
 # اللجوء الافتراضي الوحيد في كل الكود الآن — بدل Alchemy سابقاً.
