@@ -106,9 +106,11 @@ class SmartExitStrategy:
         
         try:
             # تنفيذ البيع التدريجي
+            # ملاحظة: استخدم البيانات من trades table مباشرة بدل الحسابات
             trade_dict = {
                 "id": self.trade_id,
                 "mint_address": self.mint_address,
+                "symbol": self.mint_address[:8],  # fallback إذا لم يكن موجود
                 "amount_bought": self.entry_amount,
                 "capital_invested_sol": self.entry_value_sol
             }
@@ -156,6 +158,7 @@ class SmartExitStrategy:
             trade_dict = {
                 "id": self.trade_id,
                 "mint_address": self.mint_address,
+                "symbol": self.mint_address[:8],  # fallback
                 "amount_bought": self.entry_amount,
                 "capital_invested_sol": self.entry_value_sol
             }
