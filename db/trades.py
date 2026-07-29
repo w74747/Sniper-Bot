@@ -624,7 +624,7 @@ async def get_error_logs_recent(hours: int = 24, limit: int = 100):
         
         query = """
             SELECT 
-                id, timestamp, component, error_type, message, level
+                id, timestamp, logger_name, message, level
             FROM app_logs
             WHERE level = 'ERROR' 
                 AND timestamp > NOW() - INTERVAL '1 hour' * $1
