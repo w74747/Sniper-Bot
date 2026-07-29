@@ -16,7 +16,7 @@ from monitor.trades_evaluator import evaluator
 logger = logging.getLogger("post_trade_monitor")
 
 
-async def monitor_single_trade_v2(trade: Dict):
+async def monitor_single_trade(trade: Dict):
     """
     ✅ مراقبة صفقة واحدة مع تقييم ذكي
     """
@@ -104,7 +104,7 @@ async def run_monitor_loop():
                 
                 # مراقبة كل صفقة
                 monitor_tasks = [
-                    monitor_single_trade_v2(trade)
+                    monitor_single_trade(trade)
                     for trade in open_trades
                 ]
                 
