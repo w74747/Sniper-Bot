@@ -7,7 +7,7 @@ import time
 from typing import Dict, Optional, Tuple
 from dataclasses import dataclass
 
-from trading.executor import execute_sell
+from trading.executor import execute_emergency_sell, execute_normal_sell
 from trading.swap_client import get_jupiter_quote, SOL_MINT_ADDRESS
 
 logger = logging.getLogger("smart_exit")
@@ -97,12 +97,16 @@ class SmartExitStrategy:
         )
         
         try:
-            # تنفيذ البيع
-            result = await execute_sell(
-                mint_address=self.mint_address,
-                amount=amount_to_sell,
-                reason=f"مرحلة {stage.stage_number}: {stage.reason}",
-                priority="NORMAL"
+            # تنفيذ البيع التدريجي
+            trade_dict = {
+                "id": self.trade_id,
+                "mint_address": self.mint_address,
+                "amount_bought": self.entry_amount,
+                "capital_invested_sol": self.entry_value_sol
+            }
+            result = await execute_normal_sell(
+                trade=trade_dict,
+                reason=f"مرحلة {stage.stage_number}: {stage.reason}"
             )
             
             # تحديث الحالة
@@ -141,11 +145,15 @@ class SmartExitStrategy:
         
         try:
             # بيع فوري للكل المتبقي
-            result = await execute_sell(
-                mint_address=self.mint_address,
-                amount=self.remaining_amount,
-                reason=f"🔴 خروج طارئ: {danger_reason}",
-                priority="CRITICAL"  # أعلى أولوية
+            trade_dict = {
+                "id": self.trade_id,
+                "mint_address": self.mint_address,
+                "amount_bought": self.entry_amount,
+                "capital_invested_sol": self.entry_value_sol
+            }
+            result = await execute_emergency_sell(
+                trade=trade_dict,
+                reason=f"🔴 خروج طارئ: {danger_reason}"
             )
             
             # تحديث
