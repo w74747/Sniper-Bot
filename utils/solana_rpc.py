@@ -389,13 +389,10 @@ async def get_signatures_for_address_polling(
 async def get_wallet_sol_balance(pubkey: str) -> float:
     """
     يرجع رصيد SOL الفعلي الحالي للمحفظة (ديناميكياً، وليس رقماً ثابتاً).
-
-    إصلاح حرج: كانت هذه الدالة تستخدم rpc_call بدون تحديد مزوّد، فتلجأ
-    افتراضياً لـAlchemy حصرياً — بمعزل تام عن نظام التناوب بين 5-6 مزودين.
-    إن كان مفتاح Alchemy غائباً أو معطّلاً (كما حدث فعلياً)، هذه الدالة
-    تفشل تماماً، مما يمنع حساب حجم أي صفقة ويوقف الشراء الحقيقي بالكامل
-    بصمت — بينما بقية النظام يبدو يعمل بشكل طبيعي ظاهرياً!
+    
+    تصحيح: استخدام rpc_call (مع التناوب بين المزودين) بدل _rpc_call_with_retry
+    (الذي يقتصر على Alchemy غالباً)
     """
-    result = await _rpc_call_with_retry("getBalance", [pubkey])
+    result = await rpc_call("getBalance", [pubkey])
     lamports = result.get("value", 0) if result else 0
     return lamports / 1_000_000_000
