@@ -8,11 +8,7 @@ import os
 from datetime import datetime
 
 # الاستيرادات الأساسية
-from config.settings import (
-    PUMPPORTAL_WEBSOCKET,
-    DATABASE_URL,
-    WALLET_KEYPAIR_PATH
-)
+from config.settings import PUMPPORTAL_WEBSOCKET
 
 # المراقبة والتقييم
 from monitor.pumpportal_listener import run_pumpportal_listener
@@ -40,8 +36,7 @@ async def main():
     logger.info("🚀 بدء تشغيل Sniper Bot - Solana V2")
     logger.info("="*80 + "\n")
     
-    logger.info(f"⏰ الوقت: {datetime.now().isoformat()}")
-    logger.info(f"📊 قاعدة البيانات: {DATABASE_URL.split('@')[1] if '@' in DATABASE_URL else 'محلية'}\n")
+    logger.info(f"⏰ الوقت: {datetime.now().isoformat()}\n")
     
     # 🎯 الخطوة 1: تقييم الصفقات المفتوحة عند البدء
     logger.info("━"*80)
