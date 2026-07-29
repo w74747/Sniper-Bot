@@ -11,7 +11,6 @@ from datetime import datetime
 
 from db import trades as db
 from trading.swap_client import get_jupiter_quote, SOL_MINT_ADDRESS
-from utils.solscan_client import get_token_metadata
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("recovery")
