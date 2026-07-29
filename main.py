@@ -1,108 +1,162 @@
 """
-نقطة الدخول الرئيسية للبوت — ينسّق بين كل الوحدات:
-
-1. الاستماع لعملات جديدة (mempool_listener) [يُبنى في monitor/mempool_listener.py]
-2. تشغيل الفلاتر الآلية الفورية (on-chain + reputation + sell simulation)
-3. عند الاجتياز: وضع العملة في watchlist لفترة انتظار (24-72 ساعة) بدل شراء فوري
-   [حسب القرار الاستراتيجي: التخلي عن السرعة اللحظية لصالح تقييم أعمق]
-4. بعد فترة الانتظار ومراجعة المؤشرات العضوية: تنفيذ الشراء
-5. بدء المراقبة المزدوجة المستمرة بعد كل شراء (post_trade_monitor)
-
-هذا الملف حالياً "هيكل تنسيقي" (orchestrator scaffold) — كل TODO محدد بدقة
-في الوحدات الفرعية يجب إكماله وربطه فعلياً بمصادر بيانات حقيقية (Helius,
-Jupiter, GoPlus) قبل التشغيل الفعلي.
+✅ main.py المحدث - مع نظام التقييم المتكامل
 """
+
 import asyncio
 import logging
 import os
+from datetime import datetime
 
-from db import trades as db
-from db.log_handler import install_database_log_handler, flush_log_queue_loop
-from monitor.post_trade_monitor import run_monitor_loop
-from monitor.watchlist import run_watchlist_loop, run_fast_track_loop, run_established_liquid_loop
-from monitor.pumpportal_listener import run_pumpportal_listener
-from monitor.ai_analyst import run_hourly_ai_analysis_loop, run_code_diagnosis_loop, run_helius_quota_watch_loop
-
-# ملاحظة مهمة: run_mempool_listener (استقصاء Raydium عبر HTTP polling) أُزيل
-# من التشغيل بالكامل — Raydium من أكثر برامج Solana ازدحاماً (يشمل كل
-# عمليات البيع/الشراء العادية على آلاف العملات، وليس فقط إنشاء pool جديد)،
-# وكان يستهلك كل حصص RPC المتبقية (429 شبه مستمر) بينما إنتاجيته الفعلية
-# (عملات حقيقية اجتازت الفلاتر) كانت شبه معدومة مقارنة بـPump.fun عبر
-# PumpPortal. التركيز الآن بالكامل على Pump.fun (أسرع، أدق، ومجاني تماماً).
-# الكود لا يزال موجوداً في monitor/mempool_listener.py لإعادة التفعيل لاحقاً
-# إن توفرت حصص RPC كافية (مثلاً بعد ترقية أحد المزودين).
-
-# إنشاء مجلد logs تلقائياً إن لم يكن موجوداً — ضروري على خوادم سحابية مثل Railway
-# لأن Git لا يرفع المجلدات الفارغة، فالمجلد قد لا يكون موجوداً فعلياً بعد النشر
-os.makedirs("logs", exist_ok=True)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        logging.FileHandler("logs/bot.log", encoding="utf-8"),
-        logging.StreamHandler(),
-    ],
+# الاستيرادات الأساسية
+from config.settings import (
+    PUMPPORTAL_WEBSOCKET,
+    DATABASE_URL,
+    WALLET_KEYPAIR_PATH
 )
-# حماية: حتى لو رُفع المستوى العام لـ DEBUG مستقبلاً للتشخيص، لا نريد إغراق
-# السجلات بتفاصيل داخلية من مكتبة websockets نفسها (نبضات ping/pong وغيرها)
-logging.getLogger("websockets").setLevel(logging.WARNING)
 
-# تثبيت معالج قاعدة البيانات — كل سجل من الآن يُخزَّن في Postgres أيضاً،
-# قابل للاستعلام لاحقاً عبر view_logs.py بغض النظر عن حدود تصدير Railway.
-install_database_log_handler()
+# المراقبة والتقييم
+from monitor.pumpportal_listener import run_pumpportal_listener
+from monitor.watchlist import run_watchlist_monitor
+from monitor.post_trade_monitor import run_monitor_loop
+from monitor.trades_evaluator import evaluator, run_periodic_evaluation
+from monitor.hourly_report import run_hourly_report_loop
+from monitor.daily_deepseek_report import run_daily_deepseek_report_loop
+
+# التنبيهات
+from alerts.critical_alerts import CriticalAlertsSystem
+
+# قاعدة البيانات
+from db.log_handler import install_database_log_handler
 
 logger = logging.getLogger("main")
 
 
-async def run_daily_cleanup_loop():
-    """
-    تنظيف دوري يومي للبيانات القديمة غير الضرورية — يمنع تكرار مشكلة
-    امتلاء مساحة قرص قاعدة البيانات (وصلت 79% فعلياً بعد أسابيع بلا أي
-    تنظيف). لا يمس جدول trades (سجل مالي دائم) ولا عناصر watchlist
-    المرتبطة بصفقات حقيقية (approved/watching) إطلاقاً.
-    """
-    CLEANUP_INTERVAL_SECONDS = 86400  # مرة واحدة يومياً
-
-    while True:
-        await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
-        try:
-            result = await db.cleanup_old_data()
-            logger.info(
-                f"🧹 تنظيف يومي: حُذف {result['screening_log_deleted']} سجل فحص، "
-                f"{result['app_logs_deleted']} سجل تطبيق، {result['watchlist_deleted']} عنصر مراقبة قديم"
-            )
-        except Exception as e:
-            logger.error(f"⚠️ خطأ غير متوقع في التنظيف الدوري: {type(e).__name__}: {e}")
-
-
 async def main():
-    logger.info("بدء تشغيل البوت...")
-    await db.init_db()
-
-    # تعبئة قائمة الحظر الدائمة من التاريخ الموجود بالفعل — بدون هذا، أسماء
-    # معروفة الخطورة (مثل "USOH" التي فشلت مراراً في تاريخنا) تبقى غير
-    # محظورة حتى تتكرر خسارتها من جديد بعد النشر تحديداً.
+    """
+    ✅ البرنامج الرئيسي - Sniper Bot Solana V2
+    """
+    
+    logger.info("\n" + "="*80)
+    logger.info("🚀 بدء تشغيل Sniper Bot - Solana V2")
+    logger.info("="*80 + "\n")
+    
+    logger.info(f"⏰ الوقت: {datetime.now().isoformat()}")
+    logger.info(f"📊 قاعدة البيانات: {DATABASE_URL.split('@')[1] if '@' in DATABASE_URL else 'محلية'}\n")
+    
+    # 🎯 الخطوة 1: تقييم الصفقات المفتوحة عند البدء
+    logger.info("━"*80)
+    logger.info("📋 المرحلة 1: تقييم الصفقات المفتوحة")
+    logger.info("━"*80 + "\n")
+    
     try:
-        blocked_count = await db.backfill_symbol_blocklist()
-        logger.info(f"🚫 تعبئة قائمة الحظر الدائمة: {blocked_count} صفقة كارثية من التاريخ سُجِّلت")
+        await evaluator.evaluate_on_startup()
     except Exception as e:
-        logger.error(f"⚠️ فشلت تعبئة قائمة الحظر الدائمة (غير حرج، ستُبنى تدريجياً): {e}")
-
+        logger.error(f"❌ خطأ في التقييم الأولي: {e}")
+        await CriticalAlertsSystem.alert_unhandled_exception(
+            component="startup_evaluation",
+            error=str(e),
+            traceback=str(e)
+        )
+    
+    # 🎯 الخطوة 2: إعداد جميع المهام
+    logger.info("\n" + "━"*80)
+    logger.info("📋 المرحلة 2: تشغيل المهام الأساسية")
+    logger.info("━"*80 + "\n")
+    
+    # قائمة المهام المهمة
     tasks = [
-        asyncio.create_task(run_pumpportal_listener()),  # اكتشاف Pump.fun فوري ومجاني (WebSocket مخصص)
-        asyncio.create_task(run_watchlist_loop()),     # مراجعة قائمة الانتظار العادية (24-72 ساعة)
-        asyncio.create_task(run_fast_track_loop()),    # المسار السريع (رصد الانطلاق الصاروخي)
-        asyncio.create_task(run_established_liquid_loop()),  # استراتيجية الاستقرار المُثبَت (عملات راسخة، 5+ أيام)
-        asyncio.create_task(run_monitor_loop()),       # مراقبة الصفقات المفتوحة (جاهز)
-        asyncio.create_task(flush_log_queue_loop()),   # تفريغ طابور السجلات لقاعدة البيانات دورياً
-        asyncio.create_task(run_hourly_ai_analysis_loop()),  # تحليل ذكي دوري عبر DeepSeek كل 30 دقيقة
-        asyncio.create_task(run_code_diagnosis_loop()),      # تشخيص كود تلقائي عبر DeepSeek كل ساعتين
-        asyncio.create_task(run_helius_quota_watch_loop()),  # مراقبة وتيرة استهلاك حصة Helius الشهرية
-        asyncio.create_task(run_daily_cleanup_loop()),       # تنظيف يومي لمنع امتلاء مساحة القرص
+        # 1. استقبال العملات الجديدة من PumpPortal
+        asyncio.create_task(
+            run_pumpportal_listener(),
+            name="pumpportal_listener"
+        ),
+        
+        # 2. مراقبة قائمة المراقبة
+        asyncio.create_task(
+            run_watchlist_monitor(),
+            name="watchlist_monitor"
+        ),
+        
+        # 3. مراقبة الصفقات المفتوحة
+        asyncio.create_task(
+            run_monitor_loop(),
+            name="trade_monitor"
+        ),
+        
+        # 4. التقييم الدوري للصفقات القديمة
+        asyncio.create_task(
+            run_periodic_evaluation(),
+            name="periodic_evaluation"
+        ),
+        
+        # 5. التنبيهات الفورية (بدون DeepSeek)
+        # (تعمل داخل المهام الأخرى)
+        
+        # 6. التقارير المحلية كل 3 ساعات
+        asyncio.create_task(
+            run_hourly_report_loop(),
+            name="hourly_reports"
+        ),
+        
+        # 7. التقرير اليومي العميق (مع DeepSeek)
+        asyncio.create_task(
+            run_daily_deepseek_report_loop(),
+            name="daily_deepseek"
+        ),
     ]
-    await asyncio.gather(*tasks)
+    
+    logger.info("✅ تم تشغيل جميع المهام:")
+    logger.info("   1️⃣  استقبال العملات الجديدة (PumpPortal)")
+    logger.info("   2️⃣  مراقبة قائمة المراقبة")
+    logger.info("   3️⃣  مراقبة الصفقات المفتوحة")
+    logger.info("   4️⃣  التقييم الدوري (كل ساعة)")
+    logger.info("   5️⃣  التقارير المحلية (كل 3 ساعات)")
+    logger.info("   6️⃣  التقرير اليومي (مرة/اليوم)")
+    logger.info("\n" + "━"*80 + "\n")
+    
+    # 🎯 الخطوة 3: معالجة الأخطاء والإشارات
+    try:
+        # انتظر جميع المهام
+        await asyncio.gather(*tasks, return_exceptions=True)
+    
+    except KeyboardInterrupt:
+        logger.info("\n⏹️  إيقاف البوت (Ctrl+C)...")
+        # إلغاء جميع المهام
+        for task in tasks:
+            task.cancel()
+        await asyncio.sleep(1)
+    
+    except Exception as e:
+        logger.critical(f"❌ خطأ حرج: {e}")
+        await CriticalAlertsSystem.alert_unhandled_exception(
+            component="main",
+            error=str(e),
+            traceback=str(e)
+        )
+        # إلغاء جميع المهام
+        for task in tasks:
+            task.cancel()
+    
+    finally:
+        logger.info("\n" + "="*80)
+        logger.info("🛑 تم إيقاف البوت")
+        logger.info("="*80 + "\n")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # إعداد logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    )
+    
+    # تثبيت database logging handler
+    install_database_log_handler()
+    
+    # تشغيل البرنامج الرئيسي
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("\n✅ تم الإيقاف بنجاح")
+    except Exception as e:
+        logger.critical(f"❌ خطأ غير متوقع: {e}")
