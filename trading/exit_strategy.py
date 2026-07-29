@@ -119,8 +119,8 @@ class SmartExitStrategy:
                 reason=f"مرحلة {stage.stage_number}: {stage.reason}"
             )
             
-            # تحديث الحالة
-            proceeds = float(result.get("proceeds_sol", 0))
+            # تحديث الحالة (result هو float من profit_loss)
+            proceeds = float(result) if result else 0
             self.stages_executed[stage.stage_number] = amount_to_sell
             self.total_recovered += proceeds
             self.total_proceeds += proceeds
@@ -167,8 +167,8 @@ class SmartExitStrategy:
                 reason=f"🔴 خروج طارئ: {danger_reason}"
             )
             
-            # تحديث
-            proceeds = float(result.get("proceeds_sol", 0))
+            # تحديث (result هو float من profit_loss)
+            proceeds = float(result) if result else 0
             self.total_proceeds += proceeds
             self.remaining_amount = 0.0
             
