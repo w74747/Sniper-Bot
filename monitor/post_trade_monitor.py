@@ -56,15 +56,13 @@ async def monitor_single_trade(trade: Dict):
                 exit_strategy = SmartExitStrategy(trade)
                 
                 # تحقق من مراحل الخروج
-                should_exit, stage = await exit_strategy.evaluate_exit_stages(
-                    current_price=current_price
-                )
+                stage = exit_strategy.get_stage_to_execute(current_price=current_price)
                 
-                if should_exit and stage:
+                if stage:
                     logger.info(
                         f"📊 الصفقة {symbol}: الوصول إلى مرحلة الخروج\n"
-                        f"   المرحلة: {stage['stage_number']}\n"
-                        f"   السبب: {stage['reason']}"
+                        f"   المرحلة: {stage.stage_number}\n"
+                        f"   السبب: {stage.reason}"
                     )
                     
                     # تنفيذ الخروج
