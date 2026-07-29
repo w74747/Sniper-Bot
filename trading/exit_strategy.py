@@ -42,12 +42,18 @@ class SmartExitStrategy:
         """
         تهيئة الاستراتيجية لصفقة واحدة
         """
-        self.trade_id = trade["id"]
-        self.mint_address = trade["mint_address"]
-        self.entry_price = float(trade["entry_price"])
-        self.entry_amount = float(trade["amount_bought"])
-        self.entry_value_sol = float(trade.get("capital_used", 0))
+        self.trade_id = trade.get("id")
+        self.mint_address = trade.get("mint_address")
+        self.entry_price = float(trade.get("entry_price", 0))
+        self.entry_value_sol = float(trade.get("capital_invested_sol", 0))
         self.entry_time = time.time()
+        
+        # عدم وجود amount_bought في DB - نحسبه من البيانات المتاحة
+        # amount = capital / price
+        if self.entry_price > 0 and self.entry_value_sol > 0:
+            self.entry_amount = self.entry_value_sol / self.entry_price
+        else:
+            self.entry_amount = 0
         
         # تتبع الخروج
         self.stages_executed = {}  # {stage_number: amount_sold}
@@ -57,7 +63,9 @@ class SmartExitStrategy:
         
         logger.info(
             f"✅ نظام الخروج الذكي مفعّل للصفقة {self.trade_id}\n"
-            f"   رأس مال: {self.entry_value_sol:.4f} SOL"
+            f"   رأس مال: {self.entry_value_sol:.4f} SOL\n"
+            f"   سعر الدخول: {self.entry_price:.8f}\n"
+            f"   الكمية: {self.entry_amount:.0f} tokens"
         )
     
     def get_current_pnl_pct(self, current_price: float) -> float:
