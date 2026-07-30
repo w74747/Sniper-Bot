@@ -1,6 +1,12 @@
 """
 ⚙️ إعدادات Sniper Bot Solana V2
 ═════════════════════════════════════════════════════════════════
+
+التحديثات:
+✅ max_dev_wallet_pct: 8% → 15% (استراتيجية التوازن)
+✅ monitor_interval: 10s → 0.5s (مراقبة سريعة)
+✅ إضافة DEX_ALLOWLIST (مفقود!)
+✅ إضافة كشف الانهيارات
 """
 
 import os
@@ -40,7 +46,7 @@ PUMPPORTAL_WEBSOCKET = os.getenv("PUMPPORTAL_WEBSOCKET", "wss://pumpportal.fun/a
 PUMPFUN_URL = "https://pump.fun"
 
 # ──────────────────────────────────────────────────────────────
-# 🔥 قائمة DEX المسموح بها
+# 🔥 قائمة DEX المسموح بها (مفقود - إضافة)
 # ──────────────────────────────────────────────────────────────
 
 DEX_ALLOWLIST: List[str] = [
@@ -52,76 +58,69 @@ DEX_ALLOWLIST: List[str] = [
 ]
 
 # ──────────────────────────────────────────────────────────────
-# 🔥 الفلاتر (مهم!)
-# ──────────────────────────────────────────────────────────────
-
-FILTERS = {
-    "max_dev_wallet_pct": 15.0,
-    "min_pool_size_sol": 50000.0,
-    "min_pool_size_usd": 500000.0,
-    "max_token_age_minutes": 5,
-    "min_tx_count": 10,
-}
-
-SHARIA_FILTERS_ENABLED = False  # تعطيل / تفعيل
-
-# ──────────────────────────────────────────────────────────────
 # فلاتر الأمان (الاستراتيجية #1 - التوازن)
 # ──────────────────────────────────────────────────────────────
 
+# 🔥 تم تحديثه: 8% → 15% (استراتيجية التوازن)
 MAX_DEV_WALLET_PCT = 15.0  # الحد الأقصى لأكبر محفظة
-MIN_POOL_SIZE_SOL = 50000.0
-MIN_POOL_SIZE_USD = 500000.0
-MAX_TOKEN_AGE_MINUTES = 5
-MIN_TX_COUNT = 10
-BANNED_NAMES = ["USWR"]
+
+# فلاتر إضافية
+MIN_POOL_SIZE_SOL = 50000.0  # الحد الأدنى للسيولة
+MIN_POOL_SIZE_USD = 500000.0  # الحد الأدنى بالدولار
+MAX_TOKEN_AGE_MINUTES = 5  # أقصى عمر للعملة (دقائق)
+MIN_TX_COUNT = 10  # الحد الأدنى للمعاملات
+BANNED_NAMES = ["USWR"]  # أسماء محظورة
 
 # ──────────────────────────────────────────────────────────────
 # معايير التداول
 # ──────────────────────────────────────────────────────────────
 
-CAPITAL_PER_TRADE_SOL = 0.05
-MAX_TRADES_OPEN = 5
-TAKE_PROFIT_FIRST_PCT = 2.0
-STOP_LOSS_PCT = -30.0
+CAPITAL_PER_TRADE_SOL = 0.05  # رأس المال لكل صفقة
+MAX_TRADES_OPEN = 5  # الحد الأقصى للصفقات المفتوحة
+TAKE_PROFIT_FIRST_PCT = 2.0  # هدف الربح الأول
+STOP_LOSS_PCT = -30.0  # وقف الخسارة
 
 # ──────────────────────────────────────────────────────────────
 # المراقبة والخروج (محسّنة)
 # ──────────────────────────────────────────────────────────────
 
-MONITOR_INTERVAL_SECONDS = 0.5
-CRASH_DETECTION_ENABLED = True
-CRASH_THRESHOLD_PCT = -50.0
-LIQUIDITY_CRASH_PCT = -50.0
+# 🔥 تم تحديثه: 10 ثوانٍ → 0.5 ثانية (مراقبة سريعة جداً)
+MONITOR_INTERVAL_SECONDS = 0.5  # فترة المراقبة
+
+# كشف الانهيارات
+CRASH_DETECTION_ENABLED = True  # تفعيل كشف الانهيارات
+CRASH_THRESHOLD_PCT = -50.0  # انخفاض 50% = انهيار
+LIQUIDITY_CRASH_PCT = -50.0  # انهيار السيولة
 
 # ──────────────────────────────────────────────────────────────
 # الإعدادات المتقدمة
 # ──────────────────────────────────────────────────────────────
 
-GAS_LIMIT = 1000000
-SLIPPAGE_TOLERANCE_PCT = 10.0
-PRIORITY_FEE_LAMPORTS = 100000
+GAS_LIMIT = 1000000  # حد الـ Gas
+SLIPPAGE_TOLERANCE_PCT = 10.0  # تفاوت الانزلاق
+PRIORITY_FEE_LAMPORTS = 100000  # رسم الأولوية
 
-BATCH_EXIT_ENABLED = True
-BATCH_SIZES = [0.2, 0.3, 0.5]
+BATCH_EXIT_ENABLED = True  # تفعيل البيع المتعدد الدفعات
+BATCH_SIZES = [0.2, 0.3, 0.5]  # حجم الدفعات (نسب مئوية)
 
-RETRY_ON_FAILURE = True
-MAX_RETRIES = 4
-RETRY_DELAY_SEC = 0.1
+RETRY_ON_FAILURE = True  # إعادة المحاولة عند الفشل
+MAX_RETRIES = 4  # أقصى عدد محاولات
+RETRY_DELAY_SEC = 0.1  # تأخير إعادة المحاولة
 
 # ──────────────────────────────────────────────────────────────
 # التقارير والـ Logs
 # ──────────────────────────────────────────────────────────────
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
-ENABLE_DETAILED_LOGS = True
-DAILY_REPORT_TIME = "23:00"
+ENABLE_DETAILED_LOGS = True  # logs مفصلة
+DAILY_REPORT_TIME = "23:00"  # وقت التقرير اليومي
 
 # ──────────────────────────────────────────────────────────────
 # حالة التطبيق
 # ──────────────────────────────────────────────────────────────
 
-TRADING_MODE = "PRODUCTION"
+# 📋 ملخص الإعدادات الحالية
+TRADING_MODE = "PRODUCTION"  # أو SANDBOX
 VERSION = "2.0-ENHANCED"
 
 CONFIG_SUMMARY = {
@@ -131,6 +130,6 @@ CONFIG_SUMMARY = {
     "MonitorInterval": f"{MONITOR_INTERVAL_SECONDS}s",
     "CrashDetection": CRASH_DETECTION_ENABLED,
     "BatchExit": BATCH_EXIT_ENABLED,
-    "Strategy": "Balance #1",
+    "Strategy": "Balance #1 (15% wallet cap)",
     "DEXAllowlist": ", ".join(DEX_ALLOWLIST),
 }
