@@ -7,10 +7,12 @@
 2️⃣ كشف فوري للانهيارات
 3️⃣ بيع متعدد الدفعات
 4️⃣ وقف خسارة صارم -30%
+5️⃣ حفظ دقيق للتوقيتات (entry_timestamp و exit_timestamp)
 """
 
 import asyncio
 import logging
+import time
 from typing import Dict, Optional, Tuple
 from datetime import datetime
 import json
@@ -26,6 +28,7 @@ async def monitor_single_trade(
     entry_price: float,
     amount_bought: float,
     capital_invested: float,
+    entry_timestamp: float,  # 🔥 إضافة توقيت الفتح
     get_current_price_fn,  # دالة جلب السعر
     check_crash_fn,  # دالة كشف الانهيار
     execute_exit_fn,  # دالة تنفيذ الخروج
@@ -40,6 +43,7 @@ async def monitor_single_trade(
         entry_price: سعر الشراء
         amount_bought: الكمية المشتراة
         capital_invested: رأس المال المستثمر
+        entry_timestamp: وقت فتح الصفقة (🔥 جديد)
         get_current_price_fn: دالة جلب السعر الحالي
         check_crash_fn: دالة كشف الانهيار
         execute_exit_fn: دالة تنفيذ الخروج
@@ -50,6 +54,7 @@ async def monitor_single_trade(
         f"[MONITOR] {trade_id}: بدء المراقبة المستمرة"
         f" | السعر: {entry_price:.10f}"
         f" | الكمية: {amount_bought:.6f}"
+        f" | وقت الفتح: {datetime.fromtimestamp(entry_timestamp).strftime('%H:%M:%S')}"
     )
     
     # التحقق من الشراء الفاشل
@@ -61,7 +66,9 @@ async def monitor_single_trade(
             proceeds_sol=0.0,
             close_reason="❌ فشل الشراء: لا توجد عملات",
             tx_hash_exit="ZERO_AMOUNT_BOUGHT",
-            flagged=True
+            flagged=True,
+            entry_timestamp=entry_timestamp,  # 🔥 مرر التوقيت
+            exit_timestamp=time.time(),  # 🔥 مرر توقيت الإغلاق
         )
         return
     
@@ -96,6 +103,10 @@ async def monitor_single_trade(
                     )
                     crash_detected = True
                     
+                    # 🔥 توقيت الإغلاق الدقيق
+                    exit_timestamp = time.time()
+                    duration_seconds = exit_timestamp - entry_timestamp
+                    
                     # بيع فوري
                     exit_result = await execute_exit_fn(
                         stage="emergency",
@@ -107,11 +118,19 @@ async def monitor_single_trade(
                     pnl_sol = proceeds_sol - capital_invested
                     pnl_final = (pnl_sol / capital_invested * 100) if capital_invested > 0 else 0
                     
+                    # تنسيق المدة
+                    if duration_seconds < 60:
+                        duration_str = f"{int(duration_seconds)} ثانية"
+                    else:
+                        minutes = duration_seconds / 60
+                        duration_str = f"{minutes:.1f} دقيقة"
+                    
                     logger.critical(
                         f"[MONITOR] {trade_id}: "
                         f"انهيار معالج!"
                         f" | الخسارة: {pnl_final:.2f}%"
                         f" | حصلنا: {proceeds_sol:.6f} SOL"
+                        f" | المدة: {duration_str}"
                     )
                     
                     await db.record_exit(
@@ -120,7 +139,9 @@ async def monitor_single_trade(
                         proceeds_sol=proceeds_sol,
                         close_reason=f"🚨 انهيار معالج: {crash_reason}",
                         tx_hash_exit="CRASH_EXIT",
-                        flagged=pnl_final < -20
+                        flagged=pnl_final < -20,
+                        entry_timestamp=entry_timestamp,  # 🔥 مرر التوقيت
+                        exit_timestamp=exit_timestamp,  # 🔥 مرر توقيت الإغلاق
                     )
                     return
                 
@@ -140,14 +161,29 @@ async def monitor_single_trade(
                     )
                     
                     if exit_result.get("success"):
+                        # 🔥 توقيت الإغلاق الدقيق
+                        exit_timestamp = time.time()
+                        duration_seconds = exit_timestamp - entry_timestamp
+                        
                         proceeds_sol = exit_result.get("proceeds", 0)
                         pnl_sol = proceeds_sol - capital_invested
                         pnl_final = (pnl_sol / capital_invested * 100) if capital_invested > 0 else 0
+                        
+                        # تنسيق المدة
+                        if duration_seconds < 60:
+                            duration_str = f"{int(duration_seconds)} ثانية"
+                        elif duration_seconds < 3600:
+                            minutes = duration_seconds / 60
+                            duration_str = f"{minutes:.0f} دقيقة"
+                        else:
+                            hours = duration_seconds / 3600
+                            duration_str = f"{hours:.1f} ساعة"
                         
                         logger.info(
                             f"[MONITOR] {trade_id}: "
                             f"خروج بنجاح من {exit_stage}"
                             f" | الربح/الخسارة: {pnl_final:.2f}%"
+                            f" | المدة: {duration_str}"
                         )
                         
                         await db.record_exit(
@@ -156,7 +192,9 @@ async def monitor_single_trade(
                             proceeds_sol=proceeds_sol,
                             close_reason=f"✅ خروج من {exit_stage}",
                             tx_hash_exit="NORMAL_EXIT",
-                            flagged=False
+                            flagged=False,
+                            entry_timestamp=entry_timestamp,  # 🔥 مرر التوقيت
+                            exit_timestamp=exit_timestamp,  # 🔥 مرر توقيت الإغلاق
                         )
                         return
                 
