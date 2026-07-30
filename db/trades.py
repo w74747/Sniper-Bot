@@ -36,9 +36,11 @@ async def init_db():
             filter_report TEXT,
             tx_hash_entry TEXT,
             tx_hash_exit TEXT,
-            strategy TEXT DEFAULT 'momentum_chase'
+            strategy TEXT DEFAULT 'momentum_chase',
+            amount_bought DOUBLE PRECISION DEFAULT 0
         );
         ALTER TABLE trades ADD COLUMN IF NOT EXISTS strategy TEXT DEFAULT 'momentum_chase';
+        ALTER TABLE trades ADD COLUMN IF NOT EXISTS amount_bought DOUBLE PRECISION DEFAULT 0;
         CREATE TABLE IF NOT EXISTS alerts (
             id SERIAL PRIMARY KEY,
             trade_id INTEGER REFERENCES trades(id),
@@ -157,6 +159,7 @@ class TradeRecord:
     entry_price: float
     filter_report: str
     tx_hash_entry: str
+    amount_bought: float  # ✅ عدد العملات المشتراة فعلياً (استخدمه في البيع)
     entry_timestamp: float = None
     status: str = "open"
     strategy: str = "momentum_chase"  # يُستخدَم لمقارنة أداء استراتيجيات مختلفة بمعزل عن بعضها
@@ -169,11 +172,11 @@ async def record_entry(trade: TradeRecord) -> int:
     row = await pool.fetchrow(
         """INSERT INTO trades
            (mint_address, symbol, entry_timestamp, capital_invested_sol,
-            entry_price, status, filter_report, tx_hash_entry, strategy)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id""",
+            entry_price, status, filter_report, tx_hash_entry, strategy, amount_bought)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id""",
         trade.mint_address, trade.symbol, trade.entry_timestamp,
         trade.capital_invested_sol, trade.entry_price, trade.status,
-        trade.filter_report, trade.tx_hash_entry, trade.strategy,
+        trade.filter_report, trade.tx_hash_entry, trade.strategy, trade.amount_bought,
     )
     return row["id"]
 
