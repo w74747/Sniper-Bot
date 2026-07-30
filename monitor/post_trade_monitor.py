@@ -19,11 +19,32 @@ logger = logging.getLogger("post_trade_monitor")
 async def monitor_single_trade(trade: Dict):
     """
     ✅ مراقبة صفقة واحدة مع تقييم ذكي
+    مع حماية ضد الصفقات الفاشلة
     """
     try:
         trade_id = trade.get("id")
         symbol = trade.get("symbol", "unknown")
         mint_address = trade.get("mint_address")
+        amount_bought = trade.get("amount_bought", 0)
+        
+        # ⚠️ فحص حرج: إذا كان amount_bought = 0، الصفقة فاشلة
+        if not amount_bought or amount_bought <= 0:
+            logger.error(
+                f"🔴 صفقة فاشلة (#{trade_id}):\n"
+                f"   العملة: {symbol}\n"
+                f"   amount_bought = {amount_bought}\n"
+                f"   سيتم إغلاق الصفقة بـ 100% خسارة"
+            )
+            # أغلق الصفقة فوراً
+            await db.record_exit(
+                trade_id=trade_id,
+                exit_price=0.0,
+                proceeds_sol=0.0,
+                close_reason="❌ فشل الشراء: لا توجد عملات",
+                tx_hash_exit="ZERO_AMOUNT_BOUGHT",
+                flagged=True
+            )
+            return
         
         # 1. فحص الإشارات الخطرة
         danger_monitor = DangerSignalMonitor(trade_id, mint_address)
@@ -72,7 +93,6 @@ async def monitor_single_trade(trade: Dict):
                 logger.error(f"❌ خطأ في البيع التدريجي: {e}")
         
         # 4. تقييم الصفقة بعد التحديث
-        # (لا نعطل المراقبة بسبب التقييم)
         asyncio.create_task(
             evaluator.evaluate_on_update(
                 trade_id=trade_id,
