@@ -43,6 +43,7 @@ async def execute_buy(
     if USE_DEVNET:
         logger.info(f"[DEVNET] محاكاة شراء {symbol} بمبلغ {capital_sol} SOL — لن يُرسل فعلياً")
         entry_price = 0.0
+        out_amount = 1000.0  # محاكاة
         tx_hash = "DEVNET_SIMULATED_NO_TX"
     else:
         try:
@@ -53,7 +54,20 @@ async def execute_buy(
                 slippage_bps=int(EXIT_STRATEGY.max_slippage_pct * 100),
             )
             out_amount = float(quote.get("outAmount", 0))
-            entry_price = capital_sol / out_amount if out_amount else 0.0
+            
+            # ✅ التحقق الحرج: الشراء فشل إذا لم نحصل على عملات
+            if not out_amount or out_amount <= 0:
+                logger.error(
+                    f"🔴 فشل الشراء لـ {symbol}: out_amount = {out_amount} (لم نحصل على عملات)"
+                )
+                raise Exception(f"الشراء فشل: out_amount صفر أو سالب ({out_amount})")
+            
+            entry_price = capital_sol / out_amount
+            logger.info(
+                f"✅ الشراء نجح:\n"
+                f"   العملات المشتراة: {out_amount:.0f}\n"
+                f"   سعر الدخول: {entry_price:.10f} SOL/token"
+            )
         except Exception as e:
             logger.error(f"فشل تنفيذ الشراء لـ {symbol}: {e}")
             raise
@@ -66,6 +80,7 @@ async def execute_buy(
         filter_report=json.dumps(filter_report, ensure_ascii=False),
         tx_hash_entry=tx_hash,
         strategy=strategy,
+        amount_bought=out_amount,  # ✅ سجل عدد العملات المشتراة
     )
     trade_id = await db.record_entry(trade)
 
@@ -169,30 +184,72 @@ async def _execute_sell(
         keypair = load_wallet_keypair()
         wallet_pubkey = str(keypair.pubkey())
 
-        # الخطوة 1: قراءة الرصيد الفعلي المملوك من هذه العملة — لا نبيع كمية مفترضة
-        token_balance = await get_wallet_token_balance(wallet_pubkey, mint_address)
-        if token_balance <= 0:
-            logger.warning(
-                f"رصيد {trade['symbol']} في المحفظة صفر أو غير موجود — "
-                f"لا يمكن تنفيذ البيع (ربما تم بيعه مسبقاً أو فشل الشراء الأصلي)"
+        # ✅ استخدم amount_bought من قاعدة البيانات بدل جلب الرصيد من المحفظة
+        amount_to_sell = trade.get("amount_bought", 0)
+        
+        if not amount_to_sell or amount_to_sell <= 0:
+            logger.error(
+                f"🔴 فشل البيع: amount_bought = {amount_to_sell} (لا توجد عملات مسجلة)"
             )
             exit_price = 0.0
             proceeds_sol = 0.0
-            tx_hash = "SKIPPED_ZERO_BALANCE"
+            tx_hash = "ZERO_AMOUNT_BOUGHT"
         else:
-            try:
-                tx_hash, quote = await build_and_send_swap(
-                    input_mint=mint_address,
-                    output_mint=SOL_MINT_ADDRESS,
-                    amount=token_balance,
-                    slippage_bps=int(slippage_pct * 100),
-                )
-                proceeds_lamports = float(quote.get("outAmount", 0))
-                proceeds_sol = proceeds_lamports / LAMPORTS_PER_SOL
-                exit_price = proceeds_sol / token_balance if token_balance else 0.0
-            except Exception as e:
-                logger.error(f"فشل تنفيذ البيع لـ {trade['symbol']}: {e}")
-                raise
+            # محاولة البيع مع retry (حالة تأخير المعاملة على البلوك تشين)
+            tx_hash = None
+            quote = None
+            for attempt in range(3):
+                try:
+                    logger.info(f"محاولة البيع #{attempt + 1}/3 لـ {trade['symbol']}")
+                    
+                    # التحقق من الرصيد الفعلي (للتأكد)
+                    token_balance = await get_wallet_token_balance(wallet_pubkey, mint_address)
+                    
+                    if token_balance <= 0:
+                        # إذا كانت المحاولة الأولى والرصيد صفر، انتظر وحاول مرة أخرى
+                        if attempt == 0:
+                            logger.warning(
+                                f"⏳ المحاولة الأولى: رصيد {trade['symbol']} = 0 (قد يكون التأخير في الشبكة) — سأنتظر ثانيتين"
+                            )
+                            import asyncio
+                            await asyncio.sleep(2)
+                            continue
+                        else:
+                            # بعد محاولات متعددة، الرصيد لا يزال صفراً
+                            logger.error(
+                                f"🔴 المحاولة #{attempt + 1}: رصيد {trade['symbol']} لا يزال صفراً — التخلي"
+                            )
+                            tx_hash = "SKIPPED_ZERO_BALANCE"
+                            proceeds_sol = 0.0
+                            exit_price = 0.0
+                            break
+                    
+                    # البيع
+                    tx_hash, quote = await build_and_send_swap(
+                        input_mint=mint_address,
+                        output_mint=SOL_MINT_ADDRESS,
+                        amount=int(amount_to_sell),  # استخدم amount_bought من DB
+                        slippage_bps=int(slippage_pct * 100),
+                    )
+                    proceeds_lamports = float(quote.get("outAmount", 0))
+                    proceeds_sol = proceeds_lamports / LAMPORTS_PER_SOL
+                    exit_price = proceeds_sol / amount_to_sell if amount_to_sell else 0.0
+                    
+                    logger.info(
+                        f"✅ البيع نجح (المحاولة #{attempt + 1}):\n"
+                        f"   الكمية: {amount_to_sell:.0f} tokens\n"
+                        f"   المستحصل: {proceeds_sol:.4f} SOL\n"
+                        f"   سعر الخروج: {exit_price:.10f} SOL/token"
+                    )
+                    break  # نجح البيع، خرج من الحلقة
+                    
+                except Exception as e:
+                    logger.error(f"محاولة #{attempt + 1}: فشل البيع لـ {trade['symbol']}: {e}")
+                    if attempt == 2:  # آخر محاولة
+                        raise
+                    # انتظر قبل المحاولة التالية
+                    import asyncio
+                    await asyncio.sleep(1)
 
     # إضافة أي عائد مُسترَد سابقاً من بيع جزئي (ركوب مجاني) — لحساب ربح/خسارة
     # دقيق يعكس الصفقة بأكملها، وليس فقط الجزء الأخير المتبقي منها.
