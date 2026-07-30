@@ -86,10 +86,10 @@ async def monitor_single_trade(trade: Dict):
 
 async def run_monitor_loop():
     """
-    ✅ حلقة المراقبة الرئيسية
-    مع التقييم الدوري
+    ✅ حلقة المراقبة الرئيسية - مراقبة لحظية فعلية
+    تفحص كل صفقة كل ثانية واحدة لاكتشاف الانهيارات المفاجئة
     """
-    logger.info("🟢 بدء حلقة مراقبة الصفقات المفتوحة\n")
+    logger.info("🟢 بدء حلقة مراقبة الصفقات المفتوحة (فحص فوري: كل ثانية)\n")
     
     while True:
         try:
@@ -97,9 +97,9 @@ async def run_monitor_loop():
             open_trades = await db.get_open_trades()
             
             if open_trades:
-                logger.info(f"📊 مراقبة {len(open_trades)} صفقات مفتوحة")
+                logger.debug(f"📊 مراقبة {len(open_trades)} صفقات مفتوحة")
                 
-                # مراقبة كل صفقة
+                # مراقبة كل صفقة بشكل متوازي
                 monitor_tasks = [
                     monitor_single_trade(trade)
                     for trade in open_trades
@@ -110,9 +110,10 @@ async def run_monitor_loop():
             else:
                 logger.debug("✅ لا توجد صفقات مفتوحة")
             
-            # انتظر قبل الدورة التالية
-            await asyncio.sleep(10)
+            # ⚡ تقليل من 10 ثوانٍ إلى 1 ثانية فقط
+            # حرج جداً لاكتشاف الانهيارات قبل فوات الأوان
+            await asyncio.sleep(1)
         
         except Exception as e:
             logger.error(f"❌ خطأ في حلقة المراقبة: {e}")
-            await asyncio.sleep(10)
+            await asyncio.sleep(1)
