@@ -5,11 +5,12 @@
 التحديثات:
 ✅ max_dev_wallet_pct: 8% → 15% (استراتيجية التوازن)
 ✅ monitor_interval: 10s → 0.5s (مراقبة سريعة)
+✅ إضافة DEX_ALLOWLIST (مفقود!)
 ✅ إضافة كشف الانهيارات
 """
 
 import os
-from typing import Dict
+from typing import Dict, List
 
 # ──────────────────────────────────────────────────────────────
 # الشبكة والـ RPC
@@ -43,6 +44,18 @@ DATABASE_BACKUP_URL = os.getenv("DATABASE_BACKUP_URL")
 
 PUMPPORTAL_WEBSOCKET = os.getenv("PUMPPORTAL_WEBSOCKET", "wss://pumpportal.fun/api/data")
 PUMPFUN_URL = "https://pump.fun"
+
+# ──────────────────────────────────────────────────────────────
+# 🔥 قائمة DEX المسموح بها (مفقود - إضافة)
+# ──────────────────────────────────────────────────────────────
+
+DEX_ALLOWLIST: List[str] = [
+    "Raydium",
+    "Jupiter",
+    "Orca",
+    "Phoenix",
+    "Marinade",
+]
 
 # ──────────────────────────────────────────────────────────────
 # فلاتر الأمان (الاستراتيجية #1 - التوازن)
@@ -118,4 +131,5 @@ CONFIG_SUMMARY = {
     "CrashDetection": CRASH_DETECTION_ENABLED,
     "BatchExit": BATCH_EXIT_ENABLED,
     "Strategy": "Balance #1 (15% wallet cap)",
+    "DEXAllowlist": ", ".join(DEX_ALLOWLIST),
 }
