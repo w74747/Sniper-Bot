@@ -1,326 +1,272 @@
 """
-✅ نظام الخروج المتدرج الذكي + فوري عند الخطر
+💰 استراتيجية الخروج المحسّنة
+═══════════════════════════════════════════════════════════════════
+
+المميزات:
+1️⃣ بيع متعدد الدفعات (20% + 30% + 50%)
+2️⃣ وقف خسارة صارم: -30%
+3️⃣ أهداف ربح: +2% استرجاع و +50% + أعلى
+4️⃣ Retry فوري للبيع الفاشل
+5️⃣ حماية من قسمة الصفر
 """
 
+import asyncio
 import logging
-import time
-from typing import Dict, Optional, Tuple
+from typing import Optional, Dict, Tuple
 from dataclasses import dataclass
+from enum import Enum
 
-from trading.executor import execute_emergency_sell, execute_normal_sell
-from trading.swap_client import get_jupiter_quote, SOL_MINT_ADDRESS
+logger = logging.getLogger(__name__)
 
-logger = logging.getLogger("smart_exit")
+
+class ExitStage(Enum):
+    """مراحل الخروج من الصفقة"""
+    HARD_STOP_LOSS = "hard_stop_loss"  # -30%
+    BREAKEVEN = "breakeven"  # استرجاع رأس المال (+2%)
+    HALF_PROFIT = "half_profit"  # نصف الربح (+50%)
+    FULL_PROFIT = "full_profit"  # كل الربح
 
 
 @dataclass
-class ExitStage:
-    """تعريف مرحلة خروج واحدة"""
-    stage_number: int
-    profit_threshold_pct: float  # عتبة الربح (مثل 15%)
-    sell_amount_pct: float       # نسبة البيع (مثل 20%)
-    reason: str                  # السبب
-
-
-# مراحل الخروج المتدرجة
-EXIT_STAGES = [
-    ExitStage(1, 15.0, 20.0, "+15% ربح - تأمين جزء صغير"),
-    ExitStage(2, 30.0, 30.0, "+30% ربح - تأمين جزء أكبر"),
-    ExitStage(3, 50.0, 25.0, "+50% ربح - تأمين نصف الربح"),
-    ExitStage(4, 100.0, 15.0, "+100% ربح - ركوب بقية الصعود"),
-]
+class ExitConfig:
+    """إعدادات الخروج"""
+    hard_stop_loss_pct: float = -30.0  # وقف الخسارة
+    breakeven_target_pct: float = 2.0  # استرجاع رأس المال
+    half_profit_target_pct: float = 50.0  # نصف الربح
+    full_profit_target_pct: float = 200.0  # كل الربح
+    
+    # حدود الانزلاق (في الأسوأ حالة)
+    max_slippage_pct: float = 10.0
 
 
 class SmartExitStrategy:
-    """
-    ✅ نظام خروج ذكي:
-    1. وقف خسارة صارم: -30% (إجباري - لا يمكن تجاوزه)
-    2. الهدف الأول: استرجاع رأس المال (breakeven + مصاريف)
-    3. الهدف الثاني: أعلى ارتفاع ممكن (مراحل متدرجة)
-    """
+    """استراتيجية خروج ذكية مع بيع متعدد الدفعات"""
     
-    # ⚠️ وقف خسارة صارم - يجب الخروج فوراً عند -30%
-    HARD_STOP_LOSS_PCT = -30.0
-    
-    # الهدف الأول: استرجاع رأس المال مع مصاريف صغيرة (2%)
-    BREAKEVEN_TARGET_PCT = 2.0
-    
-    def __init__(self, trade: Dict):
+    def __init__(self, trade: Dict, config: Optional[ExitConfig] = None):
         """
-        تهيئة الاستراتيجية لصفقة واحدة
+        Args:
+            trade: معلومات الصفقة
+            config: إعدادات الخروج
         """
+        self.trade = trade
         self.trade_id = trade.get("id")
         self.mint_address = trade.get("mint_address")
         self.entry_price = float(trade.get("entry_price", 0))
-        self.entry_value_sol = float(trade.get("capital_invested_sol", 0))
-        self.entry_time = time.time()
-        self.highest_price = self.entry_price  # ✅ تتبع أعلى سعر
+        self.amount_bought = float(trade.get("amount_bought", 0))
+        self.capital_invested = float(trade.get("capital_invested_sol", 0))
         
-        # عدد العملات المشتراة (من amount_bought أو محسوبة)
-        self.entry_amount = trade.get("amount_bought", 0)
-        if not self.entry_amount or self.entry_amount <= 0:
-            if self.entry_price > 0 and self.entry_value_sol > 0:
-                self.entry_amount = self.entry_value_sol / self.entry_price
-            else:
-                self.entry_amount = 0
+        self.config = config or ExitConfig()
         
-        # تتبع الخروج
-        self.stages_executed = {}  # {stage_number: amount_sold}
-        self.total_recovered = 0.0
-        self.total_proceeds = 0.0
-        self.remaining_amount = self.entry_amount
-        self.breakeven_hit = False  # ✅ تتبع هل وصلنا للهدف الأول
+        # تتبع المبيعات
+        self.amount_sold = 0.0
+        self.proceeds_sol = 0.0
+        self.exit_stages_executed = set()
         
-        logger.info(
-            f"✅ نظام الخروج الذكي مفعّل (مع حماية صارمة)\n"
-            f"   الصفقة #{self.trade_id}\n"
-            f"   رأس مال: {self.entry_value_sol:.4f} SOL\n"
-            f"   سعر الدخول: {self.entry_price:.8f}\n"
-            f"   الكمية: {self.entry_amount:.0f} tokens\n"
-            f"   ⚠️  وقف خسارة صارم: {self.HARD_STOP_LOSS_PCT}%\n"
-            f"   🎯 الهدف الأول: +{self.BREAKEVEN_TARGET_PCT}% (استرجاع رأس المال)\n"
-            f"   🚀 الهدف الثاني: أعلى ارتفاع ممكن"
-        )
+        # حماية من قسمة الصفر
+        if self.entry_price <= 0 or self.entry_price > 1000:
+            logger.error(f"[EXIT] {self.trade_id}: سعر دخول غير صحيح: {self.entry_price}")
+            self.entry_price = 0.0001
     
     def get_current_pnl_pct(self, current_price: float) -> float:
-        """
-        ✅ حساب الربح/الخسارة الحالي %
-        مع حماية ضد قسمة الصفر والقيم غير الصحيحة
-        """
-        # ⚠️ التحقق من entry_price
-        if not self.entry_price or self.entry_price <= 0 or not isinstance(self.entry_price, (int, float)):
-            logger.error(
-                f"🔴 entry_price غير صحيح: {self.entry_price}\n"
-                f"   سيتم إرجاع خسارة 100% كافتراضي"
-            )
+        """حساب الربح/الخسارة الحالية"""
+        # حماية من قسمة الصفر والقيم السالبة
+        if not self.entry_price or self.entry_price <= 0:
+            return -100.0
+        if not current_price or current_price <= 0:
             return -100.0
         
-        # ⚠️ التحقق من current_price
-        if not current_price or current_price <= 0 or not isinstance(current_price, (int, float)):
-            logger.error(f"🔴 current_price غير صحيح: {current_price}")
-            return -100.0
-        
-        # ⚠️ التحقق من overflow/NaN
         try:
             pnl = ((current_price - self.entry_price) / self.entry_price) * 100
             
-            # إذا النتيجة عدد غريب (NaN أو Inf)
-            if not isinstance(pnl, float) or pnl != pnl or pnl > 1e6 or pnl < -1e6:
-                logger.error(
-                    f"🔴 حساب PNL أنتج رقم غريب: {pnl}\n"
-                    f"   entry_price: {self.entry_price}\n"
-                    f"   current_price: {current_price}"
-                )
+            # تحقق من NaN أو infinity
+            if pnl != pnl or pnl > 1e6 or pnl < -1e6:
                 return -100.0
             
             return pnl
-        except Exception as e:
-            logger.error(f"🔴 خطأ في حساب PNL: {e}")
+        except:
             return -100.0
     
     def get_stage_to_execute(self, current_price: float) -> Optional[ExitStage]:
-        """
-        ✅ تحديد أي مرحلة يجب تنفيذها الآن
-        مع الأولوية القصوى لوقف الخسارة والهدفين
-        """
-        pnl = self.get_current_pnl_pct(current_price)
+        """تحديد مرحلة الخروج التالية"""
+        pnl_pct = self.get_current_pnl_pct(current_price)
         
-        # تحديث أعلى سعر
-        if current_price > self.highest_price:
-            self.highest_price = current_price
+        # وقف الخسارة الصارم (أولوية عالية جداً)
+        if pnl_pct <= self.config.hard_stop_loss_pct:
+            if ExitStage.HARD_STOP_LOSS not in self.exit_stages_executed:
+                return ExitStage.HARD_STOP_LOSS
         
-        # 🔴 الأولوية 1: وقف الخسارة الصارم (-30%)
-        # هذا يجب أن يُنفذ فوراً لا تحت أي ظرف
-        if pnl <= self.HARD_STOP_LOSS_PCT:
-            logger.error(
-                f"🔴🔴🔴 تنبيه وقف خسارة صارم للصفقة #{self.trade_id}!\n"
-                f"   الخسارة الحالية: {pnl:.1f}% (الحد: {self.HARD_STOP_LOSS_PCT}%)\n"
-                f"   سعر الدخول: {self.entry_price:.8f}\n"
-                f"   السعر الحالي: {current_price:.8f}\n"
-                f"   سيتم الخروج الفوري لتجنب خسارة إضافية!"
-            )
-            # أرجع StopLossStage مجازياً (نستخدم ExitStage الموجود)
-            return ExitStage(
-                stage_number=-1,  # رقم خاص لوقف الخسارة
-                profit_threshold_pct=self.HARD_STOP_LOSS_PCT,
-                sell_amount_pct=100.0,  # بيع الكل فوراً
-                reason=f"🔴 وقف خسارة صارم: {pnl:.1f}% < {self.HARD_STOP_LOSS_PCT}%"
-            )
+        # استرجاع رأس المال
+        if pnl_pct >= self.config.breakeven_target_pct:
+            if ExitStage.BREAKEVEN not in self.exit_stages_executed:
+                return ExitStage.BREAKEVEN
         
-        # 🎯 الأولوية 2: الهدف الأول - استرجاع رأس المال
-        if not self.breakeven_hit and pnl >= self.BREAKEVEN_TARGET_PCT:
-            logger.warning(
-                f"🎯 الهدف الأول محقق - استرجاع رأس المال!\n"
-                f"   الصفقة #{self.trade_id}\n"
-                f"   الربح الحالي: {pnl:.1f}%\n"
-                f"   سيتم بيع 50% لتأمين رأس المال"
-            )
-            self.breakeven_hit = True
-            return ExitStage(
-                stage_number=0,  # مرحلة خاصة للهدف الأول
-                profit_threshold_pct=self.BREAKEVEN_TARGET_PCT,
-                sell_amount_pct=50.0,  # بيع 50% لتأمين رأس المال
-                reason=f"🎯 تأمين رأس المال: +{pnl:.1f}%"
-            )
+        # نصف الربح
+        if pnl_pct >= self.config.half_profit_target_pct:
+            if ExitStage.HALF_PROFIT not in self.exit_stages_executed:
+                return ExitStage.HALF_PROFIT
         
-        # 🚀 الأولوية 3: المراحل المتدرجة للربح
-        for stage in EXIT_STAGES:
-            if pnl >= stage.profit_threshold_pct and stage.stage_number not in self.stages_executed:
-                logger.info(
-                    f"📈 مرحلة خروج متاحة للصفقة #{self.trade_id}\n"
-                    f"   المرحلة: {stage.stage_number}\n"
-                    f"   الربح: {pnl:.1f}% >= {stage.profit_threshold_pct}%\n"
-                    f"   السبب: {stage.reason}"
-                )
-                return stage
+        # كل الربح (أعلى من 200%)
+        if pnl_pct >= self.config.full_profit_target_pct:
+            if ExitStage.FULL_PROFIT not in self.exit_stages_executed:
+                return ExitStage.FULL_PROFIT
         
         return None
     
-    async def execute_stage_exit(self, stage: ExitStage, current_price: float) -> Dict:
-        """
-        ✅ تنفيذ بيع المرحلة
-        مع أولوية خاصة لوقف الخسارة والهدف الأول
-        """
-        # حساب كمية البيع
-        amount_to_sell = self.remaining_amount * (stage.sell_amount_pct / 100)
-        pnl = self.get_current_pnl_pct(current_price)
+    def get_batch_amounts(self, stage: ExitStage) -> Dict:
+        """احسب كمية البيع لكل مرحلة"""
+        remaining = self.amount_bought - self.amount_sold
         
-        logger.info(
-            f"📊 تنفيذ: {stage.reason}\n"
-            f"   الربح/الخسارة الحالية: {pnl:.1f}%\n"
-            f"   بيع: {amount_to_sell:.0f} من {self.remaining_amount:.0f} tokens"
-        )
+        if remaining <= 0:
+            return {"total": 0, "batches": []}
         
-        try:
-            trade_dict = {
-                "id": self.trade_id,
-                "mint_address": self.mint_address,
-                "symbol": self.mint_address[:8],
-                "amount_bought": self.entry_amount,
-                "capital_invested_sol": self.entry_value_sol
-            }
-            
-            # 🔴 وقف الخسارة الصارم: استخدم البيع الطارئ (أعلى انزلاق)
-            if stage.stage_number == -1:
-                logger.critical(f"🔴 تنفيذ وقف خسارة صارم فوراً!")
-                result = await execute_emergency_sell(
-                    trade=trade_dict,
-                    reason=f"🔴 وقف خسارة صارم: {pnl:.1f}%"
-                )
-            # 🎯 الهدف الأول: بيع عادي محافظ
-            elif stage.stage_number == 0:
-                logger.warning(f"🎯 تنفيذ الهدف الأول - تأمين رأس المال")
-                result = await execute_normal_sell(
-                    trade=trade_dict,
-                    reason=f"🎯 استرجاع رأس المال: +{pnl:.1f}%"
-                )
-            # 🚀 المراحل المتدرجة: بيع عادي
-            else:
-                result = await execute_normal_sell(
-                    trade=trade_dict,
-                    reason=f"مرحلة {stage.stage_number}: {stage.reason}"
-                )
-            
-            # تحديث الحالة
-            proceeds = float(result) if result else 0
-            self.stages_executed[stage.stage_number] = amount_to_sell
-            self.total_recovered += proceeds
-            self.total_proceeds += proceeds
-            self.remaining_amount -= amount_to_sell
-            
-            logger.info(
-                f"✅ البيع نجح\n"
-                f"   المستحصل: {proceeds:.4f} SOL\n"
-                f"   المتبقي: {self.remaining_amount:.0f} tokens"
-            )
-            
-            return result
+        batches = []
         
-        except Exception as e:
-            logger.error(f"❌ خطأ في البيع: {e}")
-            raise
-    
-    async def execute_emergency_exit(self, danger_reason: str, current_price: float) -> Dict:
-        """
-        ✅ خروج طارئ فوري عند إشارة خطر
-        بيع كل شيء المتبقي بسرعة قصوى
-        """
-        logger.warning(
-            f"🔴 خروج طارئ فوري!\n"
-            f"   السبب: {danger_reason}\n"
-            f"   المتبقي للبيع: {self.remaining_amount:.0f} tokens"
-        )
+        if stage == ExitStage.HARD_STOP_LOSS:
+            # بيع سريع: 50% + 50%
+            batches = [remaining * 0.5, remaining * 0.5]
         
-        if self.remaining_amount <= 0:
-            logger.info("لا يوجد رصيد للبيع (تم بيعه كله بالفعل)")
-            return {"proceeds_sol": 0}
+        elif stage == ExitStage.BREAKEVEN:
+            # بيع متحفظ: 20% + 30% + 50%
+            batches = [
+                remaining * 0.2,
+                remaining * 0.3,
+                remaining * 0.5
+            ]
         
-        try:
-            # بيع فوري للكل المتبقي
-            trade_dict = {
-                "id": self.trade_id,
-                "mint_address": self.mint_address,
-                "symbol": self.mint_address[:8],  # fallback
-                "amount_bought": self.entry_amount,
-                "capital_invested_sol": self.entry_value_sol
-            }
-            result = await execute_emergency_sell(
-                trade=trade_dict,
-                reason=f"🔴 خروج طارئ: {danger_reason}"
-            )
-            
-            # تحديث (result هو float من profit_loss)
-            proceeds = float(result) if result else 0
-            self.total_proceeds += proceeds
-            self.remaining_amount = 0.0
-            
-            # حساب الربح/الخسارة النهائي
-            pnl = self.get_current_pnl_pct(current_price)
-            
-            logger.warning(
-                f"🔴 الخروج الطارئ اكتمل\n"
-                f"   إجمالي المستحصل: {self.total_proceeds:.4f} SOL\n"
-                f"   رأس المال الأصلي: {self.entry_value_sol:.4f} SOL\n"
-                f"   الربح/الخسارة النهائي: {pnl:.1f}%"
-            )
-            
-            return result
+        elif stage == ExitStage.HALF_PROFIT:
+            # بيع متوازن: 50% + 50%
+            batches = [remaining * 0.5, remaining * 0.5]
         
-        except Exception as e:
-            logger.error(f"❌ خطأ في الخروج الطارئ: {e}")
-            raise
-    
-    def get_summary(self, current_price: float) -> Dict:
-        """
-        ✅ ملخص حالة الصفقة الحالية
-        """
-        pnl = self.get_current_pnl_pct(current_price)
+        elif stage == ExitStage.FULL_PROFIT:
+            # بيع كل شيء
+            batches = [remaining]
         
         return {
-            "trade_id": self.trade_id,
-            "current_pnl_pct": pnl,
-            "stages_executed": list(self.stages_executed.keys()),
-            "total_recovered": self.total_recovered,
-            "remaining_amount": self.remaining_amount,
-            "total_proceeds": self.total_proceeds,
-            "net_gain_loss": self.total_proceeds - self.entry_value_sol,
+            "total": remaining,
+            "batches": batches,
+            "stage": stage.value
         }
-
-
-async def get_price_safely(mint_address: str) -> Optional[float]:
-    """
-    ✅ جلب السعر الحالي بأمان
-    """
-    try:
-        quote = await get_jupiter_quote(
-            SOL_MINT_ADDRESS,
-            mint_address,
-            10_000_000,  # 0.01 SOL
-            slippage_bps=500
-        )
-        
-        return float(quote.get("outAmount", 0))
     
-    except Exception as e:
-        logger.error(f"خطأ في جلب السعر [{mint_address}]: {e}")
-        return None
+    async def execute_stage_exit(
+        self,
+        stage: ExitStage,
+        current_price: float,
+        sell_fn
+    ) -> Dict:
+        """
+        تنفيذ مرحلة خروج واحدة مع بيع متعدد الدفعات
+        """
+        
+        batch_info = self.get_batch_amounts(stage)
+        total_amount = batch_info["total"]
+        batches = batch_info["batches"]
+        
+        if not batches or total_amount <= 0:
+            return {"success": False, "proceeds": 0, "batches": 0}
+        
+        logger.info(f"[EXIT] {self.trade_id}: بدء بيع المرحلة {stage.value}")
+        
+        total_proceeds = 0
+        successful_batches = 0
+        
+        for i, batch_amount in enumerate(batches):
+            if batch_amount <= 0:
+                continue
+            
+            # محاولات متعددة للبيع
+            for attempt in range(1, 5):
+                try:
+                    # حسب الانزلاق المتوقع
+                    expected_slippage = self.config.max_slippage_pct * (attempt - 1) / 100
+                    adjusted_price = current_price * (1 - expected_slippage)
+                    
+                    # نفذ البيع
+                    result = await sell_fn(
+                        amount=batch_amount,
+                        min_amount_out=adjusted_price * batch_amount
+                    )
+                    
+                    if result and result > 0:
+                        total_proceeds += result
+                        successful_batches += 1
+                        self.amount_sold += batch_amount
+                        
+                        logger.info(
+                            f"[EXIT] {self.trade_id}: "
+                            f"الدفعة {i+1}/{len(batches)} بيعت بنجاح"
+                        )
+                        break
+                    
+                    elif attempt < 4:
+                        # انتظر قليلاً قبل المحاولة التالية
+                        await asyncio.sleep(0.1 * attempt)
+                
+                except Exception as e:
+                    logger.warning(
+                        f"[EXIT] {self.trade_id}: "
+                        f"محاولة {attempt}/4 فشلت"
+                    )
+                    
+                    if attempt < 4:
+                        await asyncio.sleep(0.1 * attempt)
+                    continue
+            
+            # انتظر بين الدفعات
+            if i < len(batches) - 1:
+                await asyncio.sleep(0.5)
+        
+        self.exit_stages_executed.add(stage)
+        self.proceeds_sol = total_proceeds
+        
+        success = successful_batches > 0
+        
+        return {
+            "success": success,
+            "proceeds": total_proceeds,
+            "batches": successful_batches
+        }
+    
+    async def execute_emergency_exit(
+        self,
+        danger_reason: str,
+        current_price: float,
+        sell_fn
+    ) -> Dict:
+        """بيع فوري في حالة الطوارئ"""
+        logger.critical(f"[EXIT] {self.trade_id}: بيع طوارئ! السبب: {danger_reason}")
+        
+        # بيع كل شيء بسرعة
+        remaining = self.amount_bought - self.amount_sold
+        
+        for attempt in range(1, 6):
+            try:
+                # قبول أي سعر في الطوارئ
+                slippage = min(self.config.max_slippage_pct * attempt / 100, 0.5)
+                min_out = current_price * remaining * (1 - slippage)
+                
+                result = await sell_fn(amount=remaining, min_amount_out=min_out)
+                
+                if result and result > 0:
+                    self.proceeds_sol = result
+                    self.amount_sold = self.amount_bought
+                    logger.critical(
+                        f"[EXIT] {self.trade_id}: بيع الطوارئ نجح!"
+                    )
+                    return {"success": True, "proceeds": result}
+                
+                await asyncio.sleep(0.2)
+            
+            except Exception as e:
+                logger.error(f"[EXIT] {self.trade_id}: محاولة {attempt} فشلت")
+                await asyncio.sleep(0.2)
+        
+        logger.critical(f"[EXIT] {self.trade_id}: فشل بيع الطوارئ!")
+        return {"success": False, "proceeds": 0}
+    
+    def calculate_final_pnl(self) -> float:
+        """حساب الربح/الخسارة النهائية"""
+        if self.capital_invested <= 0:
+            return 0
+        
+        pnl_sol = self.proceeds_sol - self.capital_invested
+        return (pnl_sol / self.capital_invested) * 100 if self.capital_invested > 0 else 0
