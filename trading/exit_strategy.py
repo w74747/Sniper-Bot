@@ -85,11 +85,38 @@ class SmartExitStrategy:
     def get_current_pnl_pct(self, current_price: float) -> float:
         """
         ✅ حساب الربح/الخسارة الحالي %
+        مع حماية ضد قسمة الصفر والقيم غير الصحيحة
         """
-        if self.entry_price <= 0:
-            return 0.0
+        # ⚠️ التحقق من entry_price
+        if not self.entry_price or self.entry_price <= 0 or not isinstance(self.entry_price, (int, float)):
+            logger.error(
+                f"🔴 entry_price غير صحيح: {self.entry_price}\n"
+                f"   سيتم إرجاع خسارة 100% كافتراضي"
+            )
+            return -100.0
         
-        return ((current_price - self.entry_price) / self.entry_price) * 100
+        # ⚠️ التحقق من current_price
+        if not current_price or current_price <= 0 or not isinstance(current_price, (int, float)):
+            logger.error(f"🔴 current_price غير صحيح: {current_price}")
+            return -100.0
+        
+        # ⚠️ التحقق من overflow/NaN
+        try:
+            pnl = ((current_price - self.entry_price) / self.entry_price) * 100
+            
+            # إذا النتيجة عدد غريب (NaN أو Inf)
+            if not isinstance(pnl, float) or pnl != pnl or pnl > 1e6 or pnl < -1e6:
+                logger.error(
+                    f"🔴 حساب PNL أنتج رقم غريب: {pnl}\n"
+                    f"   entry_price: {self.entry_price}\n"
+                    f"   current_price: {current_price}"
+                )
+                return -100.0
+            
+            return pnl
+        except Exception as e:
+            logger.error(f"🔴 خطأ في حساب PNL: {e}")
+            return -100.0
     
     def get_stage_to_execute(self, current_price: float) -> Optional[ExitStage]:
         """
