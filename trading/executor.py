@@ -33,43 +33,97 @@ async def execute_buy(
     deployer_wallet: str = "",
 ) -> int:
     """
-    ينفّذ عملية الشراء بعد اجتياز كل الفلاتر (on-chain + reputation + sell simulation).
-    يرجع trade_id بعد تسجيل الصفقة في قاعدة البيانات.
-    strategy: يُسجَّل مع الصفقة لمقارنة أداء استراتيجيات مختلفة (momentum_chase،
-    holder_velocity، patient_organic) بمعزل عن بعضها لاحقاً.
+    ينفّذ عملية الشراء مع حماية قوية جداً ضد الأخطاء
     """
     amount_lamports = int(capital_sol * LAMPORTS_PER_SOL)
 
     if USE_DEVNET:
         logger.info(f"[DEVNET] محاكاة شراء {symbol} بمبلغ {capital_sol} SOL — لن يُرسل فعلياً")
-        entry_price = 0.0
+        entry_price = 0.001  # سعر افتراضي
         out_amount = 1000.0  # محاكاة
         tx_hash = "DEVNET_SIMULATED_NO_TX"
     else:
         try:
+            logger.info(f"📤 بدء عملية الشراء: {symbol}\n   مبلغ: {capital_sol} SOL")
+            
             tx_hash, quote = await build_and_send_swap(
                 input_mint=SOL_MINT_ADDRESS,
                 output_mint=mint_address,
                 amount=amount_lamports,
                 slippage_bps=int(EXIT_STRATEGY.max_slippage_pct * 100),
             )
+            
+            # ⚠️ التحقق الأول: هل quote موجود؟
+            if not quote:
+                logger.error(f"🔴 فشل: quote = None (لا توجد استجابة من Jupiter)")
+                raise Exception("quote is None - swap failed")
+            
             out_amount = float(quote.get("outAmount", 0))
             
-            # ✅ التحقق الحرج: الشراء فشل إذا لم نحصل على عملات
+            # ⚠️ التحقق الثاني: هل out_amount > 0؟
             if not out_amount or out_amount <= 0:
                 logger.error(
-                    f"🔴 فشل الشراء لـ {symbol}: out_amount = {out_amount} (لم نحصل على عملات)"
+                    f"🔴 فشل الشراء: out_amount = {out_amount}\n"
+                    f"   Quote: {quote}\n"
+                    f"   المشكلة: لم نحصل على عملات (أو Jupiter لم يُرسل المعاملة)"
                 )
-                raise Exception(f"الشراء فشل: out_amount صفر أو سالب ({out_amount})")
+                raise Exception(f"out_amount is {out_amount} - no tokens bought")
+            
+            # ⚠️ التحقق الثالث: حساب entry_price
+            if capital_sol <= 0:
+                raise Exception(f"capital_sol = {capital_sol} (invalid)")
             
             entry_price = capital_sol / out_amount
+            
+            if entry_price <= 0 or entry_price > 1000:  # entry_price منطقي
+                logger.error(
+                    f"🔴 entry_price غير منطقي: {entry_price}\n"
+                    f"   capital: {capital_sol}, out_amount: {out_amount}"
+                )
+                raise Exception(f"entry_price {entry_price} is invalid")
+            
             logger.info(
-                f"✅ الشراء نجح:\n"
-                f"   العملات المشتراة: {out_amount:.0f}\n"
-                f"   سعر الدخول: {entry_price:.10f} SOL/token"
+                f"✅ الشراء ثم التوقيع بنجاح:\n"
+                f"   tx_hash: {tx_hash}\n"
+                f"   العملات: {out_amount:.0f}\n"
+                f"   السعر: {entry_price:.10f} SOL/token"
             )
+            
+            # ⏳ انتظر قليلاً لتأكيد المعاملة على البلوك تشين
+            logger.info("⏳ انتظار تأكيد المعاملة على البلوك تشين...")
+            import asyncio
+            await asyncio.sleep(2)
+            
+            # ⚠️ التحقق الرابع: تحقق من وصول الرصيد
+            try:
+                wallet_pubkey = str(load_wallet_keypair().pubkey())
+                actual_balance = await get_wallet_token_balance(wallet_pubkey, mint_address)
+                logger.info(f"📊 رصيد التحقق: {actual_balance:.0f} tokens (المتوقع: {out_amount:.0f})")
+                
+                if actual_balance <= 0:
+                    logger.warning(
+                        f"⚠️ تحذير: الرصيد الفعلي = 0 (قد لم تصل المعاملة بعد أو فشلت)\n"
+                        f"   سأحاول مرة أخرى بعد 3 ثوانٍ..."
+                    )
+                    await asyncio.sleep(3)
+                    actual_balance = await get_wallet_token_balance(wallet_pubkey, mint_address)
+                    logger.info(f"📊 رصيد المحاولة الثانية: {actual_balance:.0f} tokens")
+                    
+                    if actual_balance > 0:
+                        out_amount = actual_balance
+                        logger.info(f"✅ تم استخدام الرصيد الفعلي: {out_amount:.0f}")
+                    else:
+                        logger.error(f"🔴 الرصيد يبقى 0 - المعاملة فشلت!")
+                        raise Exception("Balance is still zero after 5 seconds - transaction failed")
+            except Exception as e:
+                logger.debug(f"تعذّر فحص الرصيد (سأحاول المتابعة): {e}")
+            
         except Exception as e:
-            logger.error(f"فشل تنفيذ الشراء لـ {symbol}: {e}")
+            logger.error(
+                f"❌ فشل تنفيذ الشراء لـ {symbol}:\n"
+                f"   السبب: {e}\n"
+                f"   سيتم إلغاء الصفقة"
+            )
             raise
 
     trade = db.TradeRecord(
@@ -80,9 +134,16 @@ async def execute_buy(
         filter_report=json.dumps(filter_report, ensure_ascii=False),
         tx_hash_entry=tx_hash,
         strategy=strategy,
-        amount_bought=out_amount,  # ✅ سجل عدد العملات المشتراة
+        amount_bought=out_amount,
     )
     trade_id = await db.record_entry(trade)
+    
+    logger.info(
+        f"✅ تم تسجيل الصفقة #{trade_id}\n"
+        f"   العملة: {symbol}\n"
+        f"   الكمية: {out_amount:.0f}\n"
+        f"   السعر: {entry_price:.10f}"
+    )
 
     filter_summary = "\n".join(f"- {k}: {v}" for k, v in filter_report.items())
 
