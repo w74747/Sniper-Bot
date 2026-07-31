@@ -1,25 +1,8 @@
 """
-مستمع PumpPortal — مصدر اكتشاف أساسي للعملات الجديدة + مراقبة لحظية حقيقية
-(WebSocket Push) لصفقاتنا المفتوحة تحديداً.
-
-لماذا هذا مختلف جذرياً عن كل محاولاتنا السابقة مع مزودي RPC العامين
-(Helius, Chainstack, Ankr, GetBlock, dRPC, Solana العام):
-
-كل هؤلاء مزودو RPC عامون يخدمون كل استخدامات Solana لكل المطورين حول
-العالم، ويتنافس عليهم الجميع لكل شيء — لذلك WebSocket لديهم يُعامَل
-كميزة مكلفة/مدفوعة، وحتى HTTP العادي يصطدم بحدود معدل صارمة تحت الضغط.
-
-PumpPortal (pumpportal.fun) مختلف تماماً: خدمة **مبنية خصيصاً لـPump.fun
-فقط** كمنتج مستقل، توفر WebSocket **مجاني بالكامل** لأحداث "إنشاء عملة
-جديدة" (subscribeNewToken)، **بالإضافة لبث لحظي حقيقي (<100ms) لكل عملية
-بيع/شراء على عملة مُحدَّدة** (subscribeTokenTrade) — بتكلفة زهيدة جداً
-(0.01 SOL لكل 10,000 حدث)، ونحن نراقب فقط صفقاتنا المفتوحة القليلة.
-
-هذا يحل مشكلة جوهرية: المراقبة الدورية (كل 2-5 ثوانٍ) قد تفوت انهيار
-سيولة مفاجئاً (بيع ضخم واحد) يحدث خلال أجزاء من الثانية. البث اللحظي
-يُخبرنا **فور حدوثه فعلياً على السلسلة**، بدل انتظار الدورة القادمة —
-فرق قد يكون حاسماً بين خروج بخسارة معقولة وخسارة شبه كاملة.
+✅ monitor/pumpportal_listener.py - الكامل والمصحح
+انسخ والصق هذا الملف كاملاً
 """
+
 import asyncio
 import json
 import logging
@@ -33,40 +16,23 @@ from config.settings import PUMPPORTAL_API_KEY
 
 logger = logging.getLogger("pumpportal_listener")
 
-# رابط الاتصال يتضمّن مفتاح API إن وُجد — مطلوب لتفعيل subscribeTokenTrade
-# (المراقبة اللحظية المدفوعة). بدونه، يبقى subscribeNewToken (اكتشاف
-# العملات الجديدة) يعمل مجاناً كما هو تماماً — فقط المراقبة اللحظية للصفقات
-# المفتوحة تحديداً تتطلب المفتاح لتُفعَّل فعلياً.
 PUMPPORTAL_WS_URL = (
     f"wss://pumpportal.fun/api/data?api-key={PUMPPORTAL_API_KEY}"
     if PUMPPORTAL_API_KEY else "wss://pumpportal.fun/api/data"
 )
 
-# عناوين برامج Solana القياسية والثابتة — لازمة لحساب عنوان "الحساب المرتبط"
-# (Associated Token Account) الخاص بحساب bonding curve لعملة معيّنة، لأن
-# رسالة PumpPortal لا ترسله مباشرة (فقط bondingCurveKey نفسه، وليس ATA الخاص به).
 TOKEN_PROGRAM_ID = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
 ASSOCIATED_TOKEN_PROGRAM_ID = Pubkey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
 
-# ── مراقبة لحظية حقيقية لصفقاتنا المفتوحة ──
-# _ws_ref: مرجع قابل للتعديل للاتصال الحالي — تسمح لملفات أخرى (executor.py)
-# بإرسال أوامر اشتراك/إلغاء اشتراك عبر نفس الاتصال الوحيد (بحسب توثيق
-# PumpPortal: "لا تفتح اتصالاً جديداً لكل عملة — أرسل كل الاشتراكات لنفس الاتصال").
 _ws_ref = {"ws": None}
-_tracked_positions: dict = {}  # mint_address -> آخر قيمة SOL معروفة في bonding curve
-LIQUIDITY_DRAIN_THRESHOLD_PCT = 25.0  # انخفاض 25%+ في معاملة واحدة = إنذار فوري
+_tracked_positions: dict = {}
+LIQUIDITY_DRAIN_THRESHOLD_PCT = 25.0
 
 
 async def track_open_position(mint_address: str, initial_sol_in_curve: float = None, deployer_wallet: str = ""):
-    """
-    يُستدعى فور نجاح شراء فعلي — يشترك في بث التداول اللحظي لهذه العملة
-    تحديداً عبر نفس اتصال WebSocket الحالي (بدون فتح اتصال جديد).
-    """
+    """يُستدعى فور نجاح شراء فعلي"""
     if not PUMPPORTAL_API_KEY:
-        logger.debug(
-            f"لا يوجد PUMPPORTAL_API_KEY — تخطّي المراقبة اللحظية لـ {mint_address} "
-            f"(الفحص الدوري العادي يبقى فعّالاً كمصدر وحيد)"
-        )
+        logger.debug(f"لا يوجد PUMPPORTAL_API_KEY — تخطّي المراقبة اللحظية لـ {mint_address}")
         return
 
     _tracked_positions[mint_address] = {
@@ -79,29 +45,22 @@ async def track_open_position(mint_address: str, initial_sol_in_curve: float = N
             await ws.send(json.dumps({"method": "subscribeTokenTrade", "keys": [mint_address]}))
             logger.info(f"📡 بدأت المراقبة اللحظية (WebSocket) لـ {mint_address}")
         except Exception as e:
-            logger.warning(f"تعذّر الاشتراك اللحظي لـ {mint_address} (سيستمر الفحص الدوري كاحتياطي): {e}")
+            logger.warning(f"تعذّر الاشتراك اللحظي لـ {mint_address}: {e}")
 
 
 async def untrack_open_position(mint_address: str):
-    """يُستدعى عند إغلاق الصفقة — يُلغي الاشتراك في بث هذه العملة تحديداً."""
+    """يُستدعى عند إغلاق الصفقة"""
     _tracked_positions.pop(mint_address, None)
     ws = _ws_ref.get("ws")
     if ws is not None:
         try:
             await ws.send(json.dumps({"method": "unsubscribeTokenTrade", "keys": [mint_address]}))
         except Exception as e:
-            logger.debug(f"تعذّر إلغاء الاشتراك اللحظي لـ {mint_address} (غير حرج): {e}")
+            logger.debug(f"تعذّر إلغاء الاشتراك اللحظي لـ {mint_address}: {e}")
 
 
 async def _handle_trade_event(data: dict):
-    """
-    يُعالج حدث بيع/شراء لحظي لعملة مُتابَعة (صفقة مفتوحة لدينا). فحصان
-    مستقلان، أيهما يتحقق أولاً يُطلق البيع الطارئ فوراً:
-
-    1. بيع المطوّر نفسه (إشارة قاطعة تقريباً) — حتى لو كان بيعاً صغيراً
-       لا يُحرّك السيولة كثيراً بعد، هذا غالباً بداية عملية rug متعمَّدة.
-    2. انهيار سيولة عام كبير (بيع ضخم من أي مصدر) — الفحص الأصلي.
-    """
+    """يُعالج حدث بيع/شراء لحظي"""
     mint_address = data.get("mint", "")
     position = _tracked_positions.get(mint_address)
     if position is None:
@@ -111,16 +70,11 @@ async def _handle_trade_event(data: dict):
     trader = data.get("traderPublicKey", "")
     deployer_wallet = position.get("deployer_wallet", "")
 
-    # الفحص 1 (الأسبق والأقوى): هل البائع هو نفس محفظة المطوّر؟
     if tx_type == "sell" and deployer_wallet and trader == deployer_wallet:
-        logger.warning(
-            f"🚨 رُصد بيع من محفظة المطوّر نفسها للحظة عبر WebSocket لـ {mint_address} "
-            f"— إنذار قاطع تقريباً على rug وشيك، تفعيل بيع طارئ فوري بغض النظر عن الحجم"
-        )
-        await _trigger_emergency_exit(mint_address, "رُصد بيع من محفظة المطوّر نفسها لحظياً — إنذار rug قاطع تقريباً")
+        logger.warning(f"🚨 رُصد بيع من محفظة المطوّر نفسها لـ {mint_address}")
+        await _trigger_emergency_exit(mint_address, "رُصد بيع من محفظة المطوّر نفسها لحظياً")
         return
 
-    # الفحص 2: انهيار سيولة عام كبير (الفحص الأصلي)
     current_vsol = float(data.get("vSolInBondingCurve", 0) or 0)
     previous_vsol = position.get("vsol", 0.0)
     position["vsol"] = current_vsol
@@ -132,23 +86,16 @@ async def _handle_trade_event(data: dict):
     if drop_pct < LIQUIDITY_DRAIN_THRESHOLD_PCT:
         return
 
-    logger.warning(
-        f"🚨 انهيار سيولة لحظي مكتشف عبر WebSocket لـ {mint_address}: "
-        f"انخفض احتياطي SOL بنسبة {drop_pct:.1f}% في معاملة واحدة — تفعيل بيع طارئ فوري"
-    )
-    await _trigger_emergency_exit(
-        mint_address, f"انهيار سيولة لحظي مكتشف فوراً عبر WebSocket (انخفاض {drop_pct:.1f}% في معاملة واحدة)"
-    )
+    logger.warning(f"🚨 انهيار سيولة لحظي لـ {mint_address}: انخفاض {drop_pct:.1f}%")
+    await _trigger_emergency_exit(mint_address, f"انهيار سيولة (انخفاض {drop_pct:.1f}%)")
 
 
 async def _trigger_emergency_exit(mint_address: str, reason: str):
-    """منطق مشترك لتنفيذ البيع الطارئ الفوري — يُستدعى من كلا فحصَي _handle_trade_event."""
-    # استيراد محلي لتفادي أي استيراد دائري محتمل (executor.py قد يستورد من
-    # هذا الملف لاحقاً لتفعيل track_open_position، فنُبقي هذا الاتجاه محلياً)
-    from db import trades as db
-    from trading.executor import execute_emergency_sell
-
+    """منطق تنفيذ البيع الطارئ الفوري"""
     try:
+        from db import trades as db
+        from trading.executor import execute_emergency_sell
+
         open_trades = await db.get_open_trades()
         matching_trade = next((t for t in open_trades if t["mint_address"] == mint_address), None)
         if matching_trade:
@@ -159,12 +106,7 @@ async def _trigger_emergency_exit(mint_address: str, reason: str):
 
 
 async def _handle_migration_event(data: dict):
-    """
-    يُسجَّل عند اكتشاف تخرّج عملة Pump.fun (ترقية لـRaydium/PumpSwap) —
-    بداية فترة "مراقبة طويلة الأمد" لاستراتيجية established_liquid الجديدة.
-    لا نشتري فوراً هنا إطلاقاً — فقط نُسجّل الوقت، وننتظر أياماً لنرى هل
-    تستمر بسيولة وتداول حقيقيين قبل حتى التفكير بالدخول.
-    """
+    """يُسجَّل عند اكتشاف تخرّج عملة Pump.fun"""
     mint_address = data.get("mint", "")
     symbol = data.get("symbol", "")
     deployer_wallet = data.get("traderPublicKey", "")
@@ -172,17 +114,13 @@ async def _handle_migration_event(data: dict):
     try:
         from db import trades as db
         await db.record_migration(mint_address, symbol, deployer_wallet)
-        logger.info(f"🎓 [PumpPortal] عملة تخرّجت فعلياً: {symbol or '?'} ({mint_address}) — بدأت مراقبة طويلة الأمد")
+        logger.info(f"🎓 عملة تخرّجت فعلياً: {symbol or '?'} ({mint_address})")
     except Exception as e:
         logger.warning(f"تعذّر تسجيل حدث التخرّج لـ {mint_address}: {e}")
 
 
 def _derive_associated_bonding_curve(bonding_curve: str, mint: str) -> str:
-    """
-    يحسب عنوان ATA الخاص بحساب bonding curve لعملة معيّنة — نفس المشتقة
-    القياسية لأي Associated Token Account على Solana. ضروري لاستثناء هذا
-    الحساب من حساب "أكبر حامل" (نفس إصلاح Bonding Curve الذي بنيناه سابقاً).
-    """
+    """يحسب عنوان ATA الخاص بحساب bonding curve"""
     try:
         bonding_curve_pk = Pubkey.from_string(bonding_curve)
         mint_pk = Pubkey.from_string(mint)
@@ -197,16 +135,7 @@ def _derive_associated_bonding_curve(bonding_curve: str, mint: str) -> str:
 
 
 async def run_pumpportal_listener():
-    """
-    يتصل بـPumpPortal WebSocket ويشترك في أحداث "إنشاء عملة جديدة"، ويُغذّي
-    كل حدث لنفس خط الفلترة الموجود (process_new_pool_event) — بدون أي
-    تغيير على منطق الفلاتر نفسها، فقط مصدر اكتشاف أسرع وأدق وأكثر استقراراً.
-
-    ملاحظة مهمة: نُحدّد التزامن بحد أقصى (Semaphore) — بدون هذا، كل عملة
-    جديدة تُطلق معالجة فورية بلا قيد، وبما أن Pump.fun يُطلق عشرات العملات
-    بسرعة، هذا كان يُسبب دفعات مفاجئة من عشرات طلبات RPC في نفس اللحظة
-    (getAccountInfo لكل عملة)، تتجاوز حتى تناوب عدة مزودين معاً.
-    """
+    """يتصل بـPumpPortal WebSocket ويشترك في أحداث الإنشاء"""
     reconnect_delay = 5
     processing_semaphore = asyncio.Semaphore(5)
     background_tasks: set = set()
@@ -216,7 +145,7 @@ async def run_pumpportal_listener():
             try:
                 await process_new_pool_event(event)
             except Exception as e:
-                logger.error(f"⚠️ خطأ غير متوقع في معالجة حدث PumpPortal: {type(e).__name__}: {e}")
+                logger.error(f"⚠️ خطأ في معالجة حدث PumpPortal: {type(e).__name__}: {e}")
 
     while True:
         try:
@@ -227,8 +156,6 @@ async def run_pumpportal_listener():
                 await ws.send(json.dumps({"method": "subscribeNewToken"}))
                 await ws.send(json.dumps({"method": "subscribeMigration"}))
 
-                # إعادة الاشتراك في كل الصفقات المفتوحة حالياً بعد أي انقطاع/إعادة
-                # اتصال — بدون هذا، ستفقد المراقبة اللحظية لصفقات مفتوحة بالفعل.
                 for mint_addr in list(_tracked_positions.keys()):
                     await ws.send(json.dumps({"method": "subscribeTokenTrade", "keys": [mint_addr]}))
 
@@ -243,20 +170,14 @@ async def run_pumpportal_listener():
 
                     tx_type = data.get("txType")
 
-                    # حدث "تخرّج" (ترقية لـRaydium/PumpSwap) — هذه العملة نجت فعلياً
-                    # من أخطر مرحلة (فوضى الإطلاق الأولى)؛ نُسجّلها لمراقبة طويلة
-                    # الأمد (استراتيجية established_liquid الجديدة)، منفصلة تماماً
-                    # عن استراتيجيات القنص السريع الأربع.
                     if tx_type == "migration" and "mint" in data:
                         asyncio.create_task(_handle_migration_event(data))
                         continue
 
-                    # حدث تداول لحظي (بيع/شراء) على عملة نُراقبها — فحص انهيار سيولة فوري
                     if tx_type in ("buy", "sell") and "mint" in data:
                         asyncio.create_task(_handle_trade_event(data))
                         continue
 
-                    # أول رسالة عادة تأكيد الاشتراك نفسه، وليست حدث عملة — نتجاهلها بصمت
                     if tx_type != "create" or "mint" not in data:
                         continue
 
@@ -279,16 +200,13 @@ async def run_pumpportal_listener():
                         "symbol": symbol,
                     }
 
-                    logger.info(f"🚀 [PumpPortal] عملة جديدة فعلياً: {symbol or '?'} ({mint_address})")
+                    logger.info(f"🚀 عملة جديدة: {symbol or '?'} ({mint_address})")
                     task = asyncio.create_task(_process_with_limit(pool_event))
                     background_tasks.add(task)
                     task.add_done_callback(background_tasks.discard)
 
         except Exception as e:
             _ws_ref["ws"] = None
-            logger.error(
-                f"⚠️ انقطع اتصال PumpPortal: {type(e).__name__}: {e} — "
-                f"إعادة الاتصال خلال {reconnect_delay}s"
-            )
+            logger.error(f"⚠️ انقطع اتصال PumpPortal: {type(e).__name__}: {e} — إعادة الاتصال خلال {reconnect_delay}s")
             await asyncio.sleep(reconnect_delay)
             reconnect_delay = min(reconnect_delay * 2, 60)
