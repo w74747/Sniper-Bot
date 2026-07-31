@@ -7,6 +7,7 @@
 ✅ monitor_interval: 10s → 0.5s (مراقبة سريعة)
 ✅ إضافة DEX_ALLOWLIST (مفقود!)
 ✅ إضافة كشف الانهيارات
+✅ إضافة USE_DEVNET للتمييز بين التطوير والإنتاج
 """
 
 import os
@@ -46,7 +47,7 @@ PUMPPORTAL_WEBSOCKET = os.getenv("PUMPPORTAL_WEBSOCKET", "wss://pumpportal.fun/a
 PUMPFUN_URL = "https://pump.fun"
 
 # ──────────────────────────────────────────────────────────────
-# 🔥 قائمة DEX المسموح بها (مفقود - إضافة)
+# 🔥 قائمة DEX المسموح بها
 # ──────────────────────────────────────────────────────────────
 
 DEX_ALLOWLIST: List[str] = [
@@ -116,6 +117,12 @@ ENABLE_DETAILED_LOGS = True  # logs مفصلة
 DAILY_REPORT_TIME = "23:00"  # وقت التقرير اليومي
 
 # ──────────────────────────────────────────────────────────────
+# نمط التطوير مقابل الإنتاج
+# ──────────────────────────────────────────────────────────────
+
+USE_DEVNET = os.getenv("USE_DEVNET", "true").lower() == "true"
+
+# ──────────────────────────────────────────────────────────────
 # حالة التطبيق
 # ──────────────────────────────────────────────────────────────
 
@@ -132,4 +139,5 @@ CONFIG_SUMMARY = {
     "BatchExit": BATCH_EXIT_ENABLED,
     "Strategy": "Balance #1 (15% wallet cap)",
     "DEXAllowlist": ", ".join(DEX_ALLOWLIST),
+    "UseDevnet": USE_DEVNET,
 }
