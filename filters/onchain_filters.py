@@ -4,6 +4,7 @@
 """
 
 import logging
+import struct
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
@@ -18,6 +19,16 @@ from config.settings import (
 
 logger = logging.getLogger(__name__)
 
+# ──────────────────────────────────────────────────────────────
+# عناوين الحرق المعروفة (لا يمكن بيعها)
+# ──────────────────────────────────────────────────────────────
+
+KNOWN_BURN_ADDRESSES = {
+    "11111111111111111111111111111111",  # System Program
+    "11111111111111111111111111111112",  # Null Address
+    "zzjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj",  # Burn Address (Base58)
+    "DeadDeadDeadDeadDeadDeadDeadDeadDeadDeadDeadDeadDeadDead1111",  # Dead address
+}
 
 # ──────────────────────────────────────────────────────────────
 # Data Classes
@@ -28,7 +39,7 @@ class TokenMetadata:
     """بيانات التوكن"""
     mint_address: str
     symbol: str
-    name: str
+    name: str = ""
     decimals: int = 6
     supply: float = 0
     dev_wallet: str = ""
@@ -38,10 +49,89 @@ class TokenMetadata:
     age_minutes: float = 0
     tx_count: int = 0
     holders_count: int = 0
+    mint_authority_active: bool = False
+    freeze_authority_active: bool = False
+    lp_burned_or_locked_pct: float = 0.0
+    top_holder_pct_excluding_lp: float = 0.0
+    is_standard_spl_token: bool = True
+    has_transfer_restriction_hooks: bool = False
+    has_referral_or_commission_function: bool = False
+
+
+@dataclass
+class FilterResult:
+    """نتيجة تطبيق الفلاتر"""
+    passed: bool
+    reason: str
+    details: Dict = None
+
+    def __post_init__(self):
+        if self.details is None:
+            self.details = {}
 
 
 # ──────────────────────────────────────────────────────────────
-# Filter Functions
+# دوال فك التشفير
+# ──────────────────────────────────────────────────────────────
+
+def parse_spl_mint_account(data_b64: str) -> Dict:
+    """
+    فك تشفير حساب Mint من base64.
+    
+    تنسيق Mint Account:
+    - 0-45: أساسيات (مالك، موجود)
+    - 0-32: mint_authority (عنوان أو None)
+    - 32: عدد الـ decimals
+    - 33-40: الـ supply
+    - 41-73: freeze_authority
+    """
+    try:
+        import base64
+        data = base64.b64decode(data_b64)
+        
+        if len(data) < 82:
+            return {
+                "mint_authority_active": False,
+                "freeze_authority_active": False,
+                "supply": 0,
+                "decimals": 0,
+            }
+        
+        # استخراج الـ decimals (بايت رقم 44)
+        decimals = data[44] if len(data) > 44 else 6
+        
+        # استخراج supply (8 بايتات من الموضع 36)
+        if len(data) >= 44:
+            supply = struct.unpack('<Q', data[36:44])[0]
+        else:
+            supply = 0
+        
+        # التحقق من mint_authority (بايتات 0-32)
+        mint_authority = data[0:32]
+        mint_authority_active = not all(b == 0 for b in mint_authority)
+        
+        # التحقق من freeze_authority (بايتات 46-78)
+        freeze_authority = data[46:78] if len(data) >= 78 else bytes(32)
+        freeze_authority_active = not all(b == 0 for b in freeze_authority)
+        
+        return {
+            "mint_authority_active": mint_authority_active,
+            "freeze_authority_active": freeze_authority_active,
+            "supply": supply,
+            "decimals": decimals,
+        }
+    except Exception as e:
+        logger.error(f"خطأ في فك تشفير Mint Account: {e}")
+        return {
+            "mint_authority_active": False,
+            "freeze_authority_active": False,
+            "supply": 0,
+            "decimals": 6,
+        }
+
+
+# ──────────────────────────────────────────────────────────────
+# دوال الفلترة الفردية
 # ──────────────────────────────────────────────────────────────
 
 def filter_by_dev_wallet(dev_wallet_pct: float) -> Tuple[bool, str]:
@@ -83,6 +173,80 @@ def filter_by_banned_names(symbol: str) -> Tuple[bool, str]:
     return True, f"الاسم مسموح: {symbol} ✅"
 
 
+def filter_by_mint_authority(mint_authority_active: bool) -> Tuple[bool, str]:
+    """فلتر: يجب أن تكون mint authority معطلة"""
+    if mint_authority_active:
+        return False, "❌ mint authority مفعلة (يمكن طبع عملات جديدة)"
+    return True, "✅ mint authority معطلة"
+
+
+def filter_by_freeze_authority(freeze_authority_active: bool) -> Tuple[bool, str]:
+    """فلتر: freeze authority يجب أن تكون معطلة أو آمنة"""
+    if freeze_authority_active:
+        return False, "⚠️  freeze authority مفعلة (خطر: يمكن تجميد الحسابات)"
+    return True, "✅ freeze authority معطلة"
+
+
+# ──────────────────────────────────────────────────────────────
+# تطبيق جميع الفلاتر
+# ──────────────────────────────────────────────────────────────
+
+def run_all_onchain_filters(meta: TokenMetadata) -> FilterResult:
+    """
+    تطبيق جميع فلاتر on-chain على metadata التوكن.
+    ترجع FilterResult مع .passed و .reason
+    """
+    
+    details = {}
+    
+    # 1. فلتر الاسم المحظور
+    passed, msg = filter_by_banned_names(meta.symbol)
+    details["banned_name"] = msg
+    if not passed:
+        return FilterResult(False, msg, details)
+    
+    # 2. فلتر محفظة المطور
+    passed, msg = filter_by_dev_wallet(meta.dev_wallet_pct)
+    details["dev_wallet"] = msg
+    if not passed:
+        return FilterResult(False, msg, details)
+    
+    # 3. فلتر حجم السيولة
+    passed, msg = filter_by_pool_size(meta.pool_size_sol, meta.pool_size_usd)
+    details["pool_size"] = msg
+    if not passed:
+        return FilterResult(False, msg, details)
+    
+    # 4. فلتر عمر التوكن
+    passed, msg = filter_by_token_age(meta.age_minutes)
+    details["token_age"] = msg
+    if not passed:
+        return FilterResult(False, msg, details)
+    
+    # 5. فلتر عدد المعاملات
+    passed, msg = filter_by_tx_count(meta.tx_count)
+    details["tx_count"] = msg
+    if not passed:
+        return FilterResult(False, msg, details)
+    
+    # 6. فلتر Mint Authority
+    passed, msg = filter_by_mint_authority(meta.mint_authority_active)
+    details["mint_authority"] = msg
+    if not passed:
+        return FilterResult(False, msg, details)
+    
+    # 7. فلتر Freeze Authority
+    passed, msg = filter_by_freeze_authority(meta.freeze_authority_active)
+    details["freeze_authority"] = msg
+    if not passed:
+        return FilterResult(False, msg, details)
+    
+    # جميع الفلاتر اجتازت
+    success_msg = "✅ اجتاز جميع فلاتر on-chain"
+    return FilterResult(True, success_msg, details)
+
+
+# للتوافق مع الكود القديم
 def apply_all_filters(
     symbol: str,
     dev_wallet_pct: float,
@@ -91,38 +255,17 @@ def apply_all_filters(
     age_minutes: float = 0,
     tx_count: int = 0,
 ) -> Tuple[bool, Dict]:
-    """تطبيق جميع الفلاتر"""
+    """نسخة قديمة للتوافقية (تحويل لاستخدام run_all_onchain_filters)"""
     
-    filters_results = {}
+    meta = TokenMetadata(
+        mint_address="",
+        symbol=symbol,
+        dev_wallet_pct=dev_wallet_pct,
+        pool_size_sol=pool_size_sol,
+        pool_size_usd=pool_size_usd,
+        age_minutes=age_minutes,
+        tx_count=tx_count,
+    )
     
-    # 1. فلتر الاسم المحظور
-    passed, msg = filter_by_banned_names(symbol)
-    filters_results["banned_name"] = msg
-    if not passed:
-        return False, filters_results
-    
-    # 2. فلتر محفظة المطور
-    passed, msg = filter_by_dev_wallet(dev_wallet_pct)
-    filters_results["dev_wallet"] = msg
-    if not passed:
-        return False, filters_results
-    
-    # 3. فلتر حجم السيولة
-    passed, msg = filter_by_pool_size(pool_size_sol, pool_size_usd)
-    filters_results["pool_size"] = msg
-    if not passed:
-        return False, filters_results
-    
-    # 4. فلتر عمر التوكن
-    passed, msg = filter_by_token_age(age_minutes)
-    filters_results["token_age"] = msg
-    if not passed:
-        return False, filters_results
-    
-    # 5. فلتر عدد المعاملات
-    passed, msg = filter_by_tx_count(tx_count)
-    filters_results["tx_count"] = msg
-    if not passed:
-        return False, filters_results
-    
-    return True, filters_results
+    result = run_all_onchain_filters(meta)
+    return result.passed, result.details
