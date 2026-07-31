@@ -1,120 +1,114 @@
 """
-✅ monitor/watchlist.py - الكاملة مع جميع الكلاسات والدوال
-استبدل هذا الملف الآن
+✅ watchlist.py - إدارة قائمة المراقبة
 """
 
-import logging
 import asyncio
-from datetime import datetime, timedelta
+import logging
 from dataclasses import dataclass
-from config.settings import WATCHLIST
+from datetime import datetime
+from typing import Dict, List
 
 logger = logging.getLogger("watchlist")
 
+# ✅ تعريف WATCHLIST هنا - بدلاً من استيراده
+WATCHLIST: Dict = {}
 
-# ✅ الكلاسات المطلوبة
 @dataclass
 class WatchlistEntry:
-    """كلاس إدخال قائمة المراقبة"""
-    mint: str
+    """عنصر في قائمة المراقبة"""
+    mint_address: str
     symbol: str
-    entry_time: datetime
-    entry_price: float = 0.0
-    strategy: str = "watchlist"
+    entry_timestamp: str
+    pool_size_usd: float
+    dev_wallet_pct: float
+    transaction_count: int
+    first_seen: str
 
 
-# ✅ الدوال الأساسية
-def init_watchlist_table():
-    """تهيئة جدول المراقبة"""
-    logger.info("✅ تم تهيئة جدول المراقبة")
-    return True
+async def init_watchlist_table():
+    """تهيئة جدول قائمة المراقبة"""
+    logger.info("✅ تهيئة جدول قائمة المراقبة")
 
 
-def add_to_watchlist(entry: WatchlistEntry) -> bool:
-    """إضافة عملة للمراقبة"""
-    logger.info(f"➕ إضافة {entry.symbol} للمراقبة")
-    return True
+async def add_to_watchlist(entry: WatchlistEntry):
+    """إضافة عنصر لقائمة المراقبة"""
+    global WATCHLIST
+    WATCHLIST[entry.mint_address] = {
+        "symbol": entry.symbol,
+        "entry_timestamp": entry.entry_timestamp,
+        "pool_size_usd": entry.pool_size_usd,
+        "dev_wallet_pct": entry.dev_wallet_pct,
+        "transaction_count": entry.transaction_count,
+        "first_seen": entry.first_seen,
+    }
+    logger.info(f"✅ أضيفت عملة للمراقبة: {entry.symbol} ({entry.mint_address})")
 
 
-def is_already_in_watchlist(mint: str) -> bool:
-    """التحقق من وجود عملة في المراقبة"""
-    return False
+async def is_already_in_watchlist(mint_address: str) -> bool:
+    """التحقق من وجود عملة في قائمة المراقبة"""
+    global WATCHLIST
+    return mint_address in WATCHLIST
 
 
-def get_watchlist_entries():
-    """الحصول على جميع عملات المراقبة"""
-    return []
+async def get_watchlist_entries() -> List[Dict]:
+    """الحصول على جميع عناصر قائمة المراقبة"""
+    global WATCHLIST
+    return list(WATCHLIST.values())
 
 
-def remove_from_watchlist(mint: str) -> bool:
-    """إزالة عملة من المراقبة"""
-    logger.info(f"➖ إزالة {mint} من المراقبة")
-    return True
+async def remove_from_watchlist(mint_address: str):
+    """إزالة عملة من قائمة المراقبة"""
+    global WATCHLIST
+    if mint_address in WATCHLIST:
+        del WATCHLIST[mint_address]
+        logger.info(f"✅ تمت إزالة {mint_address} من قائمة المراقبة")
 
 
-# ✅ حلقات المراقبة الأساسية
+def get_watchlist_settings() -> Dict:
+    """الحصول على إعدادات قائمة المراقبة"""
+    return {
+        "min_watch_hours": 0.5,
+        "max_watch_hours": 24,
+        "auto_remove_closed": True,
+    }
+
+
 async def run_watchlist_loop():
-    """🔍 حلقة المراقبة الرئيسية"""
+    """حلقة مراقبة العملات - المسار الكلاسيكي"""
     logger.info("✅ بدء Watchlist Loop")
+    await init_watchlist_table()
     
     while True:
         try:
-            await asyncio.sleep(5)
-            # معالجة المراقبة
+            entries = await get_watchlist_entries()
+            logger.debug(f"📊 العملات المراقبة: {len(entries)}")
+            await asyncio.sleep(2)
         except Exception as e:
-            logger.error(f"❌ خطأ في watchlist: {e}")
-            await asyncio.sleep(10)
+            logger.error(f"❌ خطأ في Watchlist Loop: {e}")
+            await asyncio.sleep(5)
 
 
 async def run_fast_track_loop():
-    """⚡ استراتيجية Fast Track - دخول سريع"""
+    """حلقة المسار السريع"""
     logger.info("✅ بدء Fast Track Loop")
     
     while True:
         try:
-            await asyncio.sleep(3)
-            # معالجة Fast Track
+            logger.debug("🚀 تقييم عملات المسار السريع...")
+            await asyncio.sleep(1)
         except Exception as e:
-            logger.error(f"❌ خطأ في Fast Track: {e}")
-            await asyncio.sleep(10)
+            logger.error(f"❌ خطأ في Fast Track Loop: {e}")
+            await asyncio.sleep(5)
 
 
 async def run_established_liquid_loop():
-    """💧 استراتيجية العملات المستقرة"""
+    """حلقة العملات المستقرة السائلة"""
     logger.info("✅ بدء Established Liquid Loop")
     
     while True:
         try:
-            await asyncio.sleep(10)
-            # معالجة العملات المستقرة
+            logger.debug("💧 تقييم العملات المستقرة...")
+            await asyncio.sleep(3)
         except Exception as e:
-            logger.error(f"❌ خطأ في Established Liquid: {e}")
-            await asyncio.sleep(10)
-
-
-def get_watchlist_settings():
-    """الحصول على إعدادات المراقبة بأمان"""
-    try:
-        if isinstance(WATCHLIST, dict):
-            return {
-                "min_watch_hours": WATCHLIST.get("min_watch_hours", 24),
-                "max_watch_hours": WATCHLIST.get("max_watch_hours", 72),
-                "min_organic_holders_growth": WATCHLIST.get("min_organic_holders_growth", 10),
-                "enabled": WATCHLIST.get("enabled", True)
-            }
-        else:
-            # إذا كان WATCHLIST boolean
-            return {
-                "min_watch_hours": 24,
-                "max_watch_hours": 72,
-                "min_organic_holders_growth": 10,
-                "enabled": WATCHLIST if isinstance(WATCHLIST, bool) else True
-            }
-    except Exception as e:
-        logger.error(f"❌ خطأ في قراءة إعدادات WATCHLIST: {e}")
-        return {
-            "min_watch_hours": 24,
-            "max_watch_hours": 72,
-            "min_organic_holders_growth": 10,
-            "enabled": True
-        }
+            logger.error(f"❌ خطأ في Established Liquid Loop: {e}")
+            await asyncio.sleep(5)
