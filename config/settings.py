@@ -8,6 +8,7 @@
 ✅ إضافة DEX_ALLOWLIST (مفقود!)
 ✅ إضافة كشف الانهيارات
 ✅ إضافة USE_DEVNET للتمييز بين التطوير والإنتاج
+✅ إضافة جميع مفاتيح API والإعدادات الناقصة
 """
 
 import os
@@ -123,6 +124,62 @@ DAILY_REPORT_TIME = "23:00"  # وقت التقرير اليومي
 USE_DEVNET = os.getenv("USE_DEVNET", "true").lower() == "true"
 
 # ──────────────────────────────────────────────────────────────
+# مفاتيح API والنقاط النهائية
+# ──────────────────────────────────────────────────────────────
+
+# RPC
+PRIMARY_RPC_URL = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
+
+# APIs
+PUMPPORTAL_API_KEY = os.getenv("PUMPPORTAL_API_KEY", "")
+JUPITER_API_KEY = os.getenv("JUPITER_API_KEY", "")
+JUPITER_API_BASE = os.getenv("JUPITER_API_BASE", "https://quote-api.jup.ag/v6")
+
+RUGCHECK_API_KEY = os.getenv("RUGCHECK_API_KEY", "")
+GMGN_API_KEY = os.getenv("GMGN_API_KEY", "")
+
+SOLSCAN_API_KEY = os.getenv("SOLSCAN_API_KEY", "")
+SOLSCAN_API_BASE = os.getenv("SOLSCAN_API_BASE", "https://api.solscan.io")
+
+TATUM_API_KEY = os.getenv("TATUM_API_KEY", "")
+TATUM_SOLANA_RPC_URL = os.getenv("TATUM_SOLANA_RPC_URL", "")
+
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
+
+# التنبيهات
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+# ──────────────────────────────────────────────────────────────
+# استراتيجية الخروج والـ Watchlist
+# ──────────────────────────────────────────────────────────────
+
+# مسارات الانتظار
+EXIT_STRATEGY = "multi_batch"  # أو "aggressive", "conservative"
+WATCHLIST = True  # تفعيل قائمة الانتظار
+FAST_TRACK = True  # تفعيل المسار السريع للعملات الجديدة
+
+# مؤشرات الزخم (Momentum)
+HOLDER_VELOCITY = 5  # عدد الحاملين الجدد في الدقيقة
+SUSTAINED_TREND = 3  # عدد فترات المراقبة المتتالية برصيد إيجابي
+GRADUATION_PROXIMITY = 0.8  # نسبة قرب التخرج من pump.fun
+
+# معايير Safety Entry
+RUGCHECK_MAX_SCORE = 5  # الحد الأقصى لـ rug check score
+RUGCHECK_MAX_INSIDERS = 3  # الحد الأقصى للمطورين المشبوهين
+ESTABLISHED_LIQUID = 100000.0  # السيولة المعتبرة "ثابتة" (USD)
+
+# معايير GMGN
+GMGN_MAX_RAT_TRADER_PCT = 10.0  # الحد الأقصى لنسبة المتاجرين الفئران
+GMGN_MAX_BUNDLER_PCT = 5.0  # الحد الأقصى لنسبة المجمّعات
+GMGN_MAX_RUG_RATIO = 0.15  # الحد الأقصى لنسبة الـ rug
+
+# قائمة الحظر (Symbol Blocklist)
+SYMBOL_BLOCKLIST_LOSS_THRESHOLD_PCT = -50.0  # خسارة 50% = حظر الرمز
+SYMBOL_BLOCKLIST_MAX_OCCURRENCES = 3  # حظر بعد 3 مرات خسارة
+
+# ──────────────────────────────────────────────────────────────
 # حالة التطبيق
 # ──────────────────────────────────────────────────────────────
 
@@ -140,4 +197,6 @@ CONFIG_SUMMARY = {
     "Strategy": "Balance #1 (15% wallet cap)",
     "DEXAllowlist": ", ".join(DEX_ALLOWLIST),
     "UseDevnet": USE_DEVNET,
+    "Watchlist": WATCHLIST,
+    "FastTrack": FAST_TRACK,
 }
