@@ -20,14 +20,14 @@ from config.settings import (
 logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────────────────────
-# عناوين الحرق المعروفة (لا يمكن بيعها)
+# عناوين الحرق المعروفة
 # ──────────────────────────────────────────────────────────────
 
 KNOWN_BURN_ADDRESSES = {
-    "11111111111111111111111111111111",  # System Program
-    "11111111111111111111111111111112",  # Null Address
-    "zzjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj",  # Burn Address (Base58)
-    "DeadDeadDeadDeadDeadDeadDeadDeadDeadDeadDeadDeadDeadDead1111",  # Dead address
+    "11111111111111111111111111111111",
+    "11111111111111111111111111111112",
+    "zzjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj",
+    "DeadDeadDeadDeadDeadDeadDeadDeadDeadDeadDeadDeadDeadDead1111",
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -75,16 +75,7 @@ class FilterResult:
 # ──────────────────────────────────────────────────────────────
 
 def parse_spl_mint_account(data_b64: str) -> Dict:
-    """
-    فك تشفير حساب Mint من base64.
-    
-    تنسيق Mint Account:
-    - 0-45: أساسيات (مالك، موجود)
-    - 0-32: mint_authority (عنوان أو None)
-    - 32: عدد الـ decimals
-    - 33-40: الـ supply
-    - 41-73: freeze_authority
-    """
+    """فك تشفير حساب Mint من base64"""
     try:
         import base64
         data = base64.b64decode(data_b64)
@@ -97,20 +88,16 @@ def parse_spl_mint_account(data_b64: str) -> Dict:
                 "decimals": 0,
             }
         
-        # استخراج الـ decimals (بايت رقم 44)
         decimals = data[44] if len(data) > 44 else 6
         
-        # استخراج supply (8 بايتات من الموضع 36)
         if len(data) >= 44:
             supply = struct.unpack('<Q', data[36:44])[0]
         else:
             supply = 0
         
-        # التحقق من mint_authority (بايتات 0-32)
         mint_authority = data[0:32]
         mint_authority_active = not all(b == 0 for b in mint_authority)
         
-        # التحقق من freeze_authority (بايتات 46-78)
         freeze_authority = data[46:78] if len(data) >= 78 else bytes(32)
         freeze_authority_active = not all(b == 0 for b in freeze_authority)
         
@@ -181,7 +168,7 @@ def filter_by_mint_authority(mint_authority_active: bool) -> Tuple[bool, str]:
 
 
 def filter_by_freeze_authority(freeze_authority_active: bool) -> Tuple[bool, str]:
-    """فلتر: freeze authority يجب أن تكون معطلة أو آمنة"""
+    """فلتر: freeze authority يجب أن تكون معطلة"""
     if freeze_authority_active:
         return False, "⚠️  freeze authority مفعلة (خطر: يمكن تجميد الحسابات)"
     return True, "✅ freeze authority معطلة"
@@ -192,10 +179,7 @@ def filter_by_freeze_authority(freeze_authority_active: bool) -> Tuple[bool, str
 # ──────────────────────────────────────────────────────────────
 
 def run_all_onchain_filters(meta: TokenMetadata) -> FilterResult:
-    """
-    تطبيق جميع فلاتر on-chain على metadata التوكن.
-    ترجع FilterResult مع .passed و .reason
-    """
+    """تطبيق جميع فلاتر on-chain على metadata التوكن"""
     
     details = {}
     
@@ -255,7 +239,7 @@ def apply_all_filters(
     age_minutes: float = 0,
     tx_count: int = 0,
 ) -> Tuple[bool, Dict]:
-    """نسخة قديمة للتوافقية (تحويل لاستخدام run_all_onchain_filters)"""
+    """نسخة قديمة للتوافقية"""
     
     meta = TokenMetadata(
         mint_address="",
