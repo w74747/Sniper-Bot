@@ -9,7 +9,8 @@ import os
 from datetime import datetime
 import aiohttp
 
-from settings import PUMPPORTAL_WEBSOCKET, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+# ✅ الاستيراد الصحيح من config
+from config.settings import PUMPPORTAL_WEBSOCKET, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
 from monitor.pumpportal_listener import run_pumpportal_listener
 from monitor.watchlist import run_watchlist_loop, run_fast_track_loop, run_established_liquid_loop
@@ -79,9 +80,33 @@ class TelegramBot:
         
         elif text == "/balance":
             try:
-                from solana_rpc import get_wallet_balance
-                balance = await get_wallet_balance()
-                await self.send_message(f"💰 <b>الرصيد:</b> {balance:.4f} SOL")
+                from solana_rpc import get_wallet_sol_balance
+                from config.settings import WALLET_PRIVATE_KEY, WALLET_KEYPAIR_PATH
+                import json
+                from solders.keypair import Keypair
+                
+                pubkey = None
+                if WALLET_PRIVATE_KEY:
+                    try:
+                        keypair = Keypair.from_secret_key(bytes.fromhex(WALLET_PRIVATE_KEY))
+                        pubkey = str(keypair.pubkey())
+                    except:
+                        pass
+                
+                if not pubkey:
+                    try:
+                        with open(WALLET_KEYPAIR_PATH) as f:
+                            data = json.load(f)
+                            keypair = Keypair.from_secret_key(bytes(data))
+                            pubkey = str(keypair.pubkey())
+                    except:
+                        pass
+                
+                if pubkey:
+                    balance = await get_wallet_sol_balance(pubkey)
+                    await self.send_message(f"💰 <b>الرصيد:</b> {balance:.4f} SOL")
+                else:
+                    await self.send_message("❌ لا يمكن إيجاد المحفظة")
             except Exception as e:
                 await self.send_message(f"❌ خطأ: {str(e)[:50]}")
         
@@ -133,9 +158,33 @@ async def recovery_startup():
     
     try:
         logger.info("💰 بيانات المحفظة:")
-        from solana_rpc import get_wallet_balance
-        balance = await get_wallet_balance()
-        logger.info(f"   ✅ الرصيد الحالي: {balance:.4f} SOL\n")
+        from solana_rpc import get_wallet_sol_balance
+        from config.settings import WALLET_PRIVATE_KEY, WALLET_KEYPAIR_PATH
+        import json
+        from solders.keypair import Keypair
+        
+        pubkey = None
+        if WALLET_PRIVATE_KEY:
+            try:
+                keypair = Keypair.from_secret_key(bytes.fromhex(WALLET_PRIVATE_KEY))
+                pubkey = str(keypair.pubkey())
+            except:
+                pass
+        
+        if not pubkey:
+            try:
+                with open(WALLET_KEYPAIR_PATH) as f:
+                    data = json.load(f)
+                    keypair = Keypair.from_secret_key(bytes(data))
+                    pubkey = str(keypair.pubkey())
+            except:
+                pass
+        
+        if pubkey:
+            balance = await get_wallet_sol_balance(pubkey)
+            logger.info(f"   ✅ الرصيد الحالي: {balance:.4f} SOL\n")
+        else:
+            logger.warning("   ⚠️ لا يمكن إيجاد المحفظة\n")
     except Exception as e:
         logger.error(f"❌ خطأ في جلب المحفظة: {e}\n")
     
