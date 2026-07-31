@@ -5,8 +5,8 @@
 الهدف: التأكد أن كل جزء (فك تشفير Mint، الفلاتر، GoPlus، Jupiter) يعمل
 بشكل صحيح ومنعزل، قبل الانتقال لبناء اكتشاف الـ pools التلقائي.
 
-طريقة التشغيل:
-    python test_manual_pipeline.py
+طريقة الاستخدام:
+    python -m tools.test_manual_pipeline
 
 ملاحظة: BONK ستفشل غالباً في فلتر "حرق/قفل السيولة" أو "توزيع الحيازة"
 لأننا لا نمرر lp_mint_address أو deployer_wallet حقيقيين لها هنا — هذا
@@ -42,10 +42,10 @@ def print_header(title: str):
 
 
 async def main():
-    print_header(f"اختبار السلسلة الكاملة على عنوان: {TEST_MINT_ADDRESS}")
+    print_header(f"🧪 اختبار السلسلة الكاملة على عنوان: {TEST_MINT_ADDRESS}")
 
     # ── الخطوة 1: فك تشفير حساب Mint الفعلي عبر RPC ──
-    print_header("الخطوة 1: قراءة وفك تشفير حساب Mint")
+    print_header("الخطوة 1️⃣: قراءة وفك تشفير حساب Mint")
     try:
         mint_data_b64 = await get_account_info_base64(TEST_MINT_ADDRESS)
         mint_info = parse_spl_mint_account(mint_data_b64)
@@ -60,7 +60,7 @@ async def main():
         return
 
     # ── الخطوة 2: توزيع الحيازة (أكبر 20 حاملاً) ──
-    print_header("الخطوة 2: قراءة توزيع الحيازة (أكبر الحاملين)")
+    print_header("الخطوة 2️⃣: قراءة توزيع الحيازة (أكبر الحاملين)")
     largest_accounts = []
     try:
         largest_accounts = await get_token_largest_accounts(TEST_MINT_ADDRESS)
@@ -69,7 +69,7 @@ async def main():
             top = largest_accounts[0]
             print(f"   أكبر حساب: {top.get('address')} برصيد {top.get('amount')}")
     except Exception as e:
-        print(f"⚠️ فشلت هذه الخطوة تحديداً مع BONK: {type(e).__name__}: {e!r}")
+        print(f"⚠️  فشلت هذه الخطوة تحديداً مع BONK: {type(e).__name__}: {e!r}")
         print(
             "   هذا متوقع مع BONK تحديداً بسبب ضخامة عدد حامليها (ملايين الحسابات)،\n"
             "   وهو قيد معروف في الفريتير المجاني لكل مزودي RPC تقريباً، وليس خطأً\n"
@@ -78,7 +78,7 @@ async def main():
         )
 
     # ── الخطوة 3: بناء TokenMetadata وتشغيل الفلاتر الآلية ──
-    print_header("الخطوة 3: تشغيل الفلاتر الآلية (on-chain)")
+    print_header("الخطوة 3️⃣: تشغيل الفلاتر الآلية (on-chain)")
     total_supply = mint_info["supply"] or 1
     top_holder_pct = (
         float(largest_accounts[0]["amount"]) / total_supply * 100
@@ -103,19 +103,19 @@ async def main():
     print(f"{status}: {onchain_result.reason}")
     print("(ملاحظة: الرفض هنا متوقع لأننا لم نمرر lp_mint_address حقيقياً)")
 
-    # ── الخطوة 4: فحص GoPlus ──
-    print_header("الخطوة 4: فحص GoPlus Security")
+    # ── الخطوة 4: فحص السمعة (GoPlus) ──
+    print_header("الخطوة 4️⃣: فحص السمعة (GoPlus Security)")
     try:
         goplus_ok, goplus_reason = await evaluate_reputation(
             TEST_MINT_ADDRESS, deployer_wallet=""
         )
-        status = "✅ نجح" if goplus_ok else "⚠️ رُفض"
+        status = "✅ نجح" if goplus_ok else "⚠️  رُفض"
         print(f"{status}: {goplus_reason}")
     except Exception as e:
         print(f"❌ خطأ تقني غير متوقع: {e}")
 
     # ── الخطوة 5: محاكاة البيع عبر Jupiter ──
-    print_header("الخطوة 5: محاكاة البيع عبر Jupiter Quote API")
+    print_header("الخطوة 5️⃣: محاكاة البيع عبر Jupiter Quote API")
     try:
         sim_result = await simulate_sell(
             rpc_client=None,
@@ -125,16 +125,16 @@ async def main():
             test_amount_lamports=1_000_000,
         )
         sim_ok, sim_reason = evaluate_simulation_result(sim_result)
-        status = "✅ نجحت" if sim_ok else "⚠️ رُفضت"
+        status = "✅ نجحت" if sim_ok else "⚠️  رُفضت"
         print(f"{status}: {sim_reason}")
         print(f"   can_sell: {sim_result.can_sell}")
         print(f"   effective_sell_tax_pct: {sim_result.effective_sell_tax_pct:.2f}%")
     except Exception as e:
         print(f"❌ خطأ تقني غير متوقع: {e}")
 
-    print_header("انتهى الاختبار")
+    print_header("✅ انتهى الاختبار")
     print(
-        "إذا رأيت ✅ أو ⚠️ في كل خطوة (بدون ❌)، فهذا يعني أن كل الاتصالات\n"
+        "إذا رأيت ✅ أو ⚠️  في كل خطوة (بدون ❌)، فهذا يعني أن كل الاتصالات\n"
         "(RPC، GoPlus، Jupiter) تعمل بنجاح تقني، بغض النظر عن نتيجة القبول/الرفض."
     )
 
