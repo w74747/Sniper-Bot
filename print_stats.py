@@ -1,43 +1,50 @@
 """
-سكربت مستقل لعرض إحصائيات الفحص من قاعدة البيانات الدائمة (Postgres).
-
-طريقة الاستخدام على Railway:
-1. غيّر Procfile مؤقتاً إلى: worker: python print_stats.py
-2. انتظر انتهاء التشغيل، اقرأ الإحصائيات من Deploy Logs
-3. أعد Procfile إلى: worker: python main.py
+✅ print_stats.py - في جذر المشروع
+طباعة إحصائيات المحفظة والصفقات
 """
-import asyncio
-from db.trades import get_screening_stats, init_db
 
-HOURS = 6
+import logging
+from datetime import datetime
 
-
-async def main():
-    await init_db()
-    stats = await get_screening_stats(hours=HOURS)
-
-    print("=" * 60)
-    print(f"إحصائيات آخر {stats['period_hours']} ساعة")
-    print("=" * 60)
-    print(f"إجمالي العملات المفحوصة: {stats['total_screened']}")
-    print()
-
-    print("التوزيع حسب القرار:")
-    for row in stats["by_decision"]:
-        print(f"  {row['decision']}: {row['c']}")
-    print()
-
-    print("أكثر 10 أسباب رفض تكراراً:")
-    for row in stats["top_rejection_reasons"]:
-        print(f"  ({row['c']}x) {row['reason'][:100]}")
-    print()
-
-    print(f"العملات المضافة لـ watchlist ({len(stats['added_to_watchlist'])} إجمالاً، آخر 20 فقط):")
-    for row in stats["added_to_watchlist"][:20]:
-        print(f"  {row['symbol']} — {row['mint_address']}")
-
-    print("=" * 60)
+logger = logging.getLogger("print_stats")
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+async def print_wallet_status():
+    """طباعة حالة المحفظة الحالية"""
+    try:
+        from db import trades as db
+        
+        wallet = await db.get_wallet_balance()
+        open_trades = await db.get_open_trades()
+        closed_trades = await db.get_closed_trades()
+        
+        balance = wallet.get("balance", 0)
+        stats = f"""
+💰 **حالة المحفظة:**
+   الرصيد الحالي: {balance:.4f} SOL
+   عدد الصفقات المفتوحة: {len(open_trades)}
+   عدد الصفقات المغلقة: {len(closed_trades)}
+   الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+        """
+        logger.info(stats)
+        return stats
+    except Exception as e:
+        logger.error(f"❌ خطأ في جلب الإحصائيات: {e}")
+        return f"❌ خطأ: {e}"
+
+
+async def print_open_trades():
+    """طباعة الصفقات المفتوحة"""
+    try:
+        from db import trades as db
+        
+        open_trades = await db.get_open_trades()
+        if not open_trades:
+            logger.info("✅ لا توجد صفقات مفتوحة")
+            return
+        
+        logger.info(f"📊 الصفقات المفتوحة ({len(open_trades)}):")
+        for trade in open_trades:
+            logger.info(f"  - {trade.get('symbol', '?')}: {trade.get('entry_price', 0)} @ {trade.get('entry_timestamp', '?')}")
+    except Exception as e:
+        logger.error(f"❌ خطأ: {e}")
