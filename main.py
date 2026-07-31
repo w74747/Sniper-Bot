@@ -1,16 +1,15 @@
 """
-✅ main.py - مع Telegram Bot + Recovery + Stats
-حل كامل وموثوق - بدون مشاكل
+✅ main.py - Sniper Bot Solana V2
+مع Telegram Bot + Recovery + Stats
 """
 
 import asyncio
 import logging
 import os
-import json
 from datetime import datetime
 import aiohttp
 
-from config.settings import PUMPPORTAL_WEBSOCKET, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from settings import PUMPPORTAL_WEBSOCKET, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
 from monitor.pumpportal_listener import run_pumpportal_listener
 from monitor.watchlist import run_watchlist_loop, run_fast_track_loop, run_established_liquid_loop
@@ -19,7 +18,7 @@ from monitor.post_trade_monitor import run_monitor_loop
 logger = logging.getLogger("main")
 
 # ============================================================================
-# 🤖 TELEGRAM BOT - استقبال الأوامر
+# 🤖 TELEGRAM BOT
 # ============================================================================
 
 class TelegramBot:
@@ -35,8 +34,10 @@ class TelegramBot:
             async with aiohttp.ClientSession() as session:
                 await session.post(
                     f"{self.base_url}/sendMessage",
-                    json={"chat_id": self.chat_id, "text": text, "parse_mode": "HTML"}
+                    json={"chat_id": self.chat_id, "text": text, "parse_mode": "HTML"},
+                    timeout=aiohttp.ClientTimeout(total=10)
                 )
+                logger.info(f"📤 رسالة أرسلت: {text[:50]}...")
         except Exception as e:
             logger.error(f"❌ خطأ في إرسال الرسالة: {e}")
     
@@ -46,56 +47,65 @@ class TelegramBot:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     f"{self.base_url}/getUpdates",
-                    params={"offset": self.offset, "timeout": 30}
+                    params={"offset": self.offset, "timeout": 30},
+                    timeout=aiohttp.ClientTimeout(total=35)
                 ) as resp:
                     data = await resp.json()
                     return data.get("result", [])
+        except asyncio.TimeoutError:
+            return []
         except Exception as e:
             logger.error(f"❌ خطأ في استقبال الرسائل: {e}")
             return []
     
     async def handle_message(self, text):
         """معالجة الأوامر"""
+        text = text.strip().lower()
         logger.info(f"📨 أمر من التلجرام: {text}")
         
         if text == "/start":
-            await self.send_message("🤖 مرحباً بك في Sniper Bot!\nاستخدم /help للأوامر")
+            await self.send_message("🤖 <b>مرحباً بك في Sniper Bot!</b>\nاستخدم /help للأوامر")
         
         elif text == "/help":
-            help_text = """
-<b>📋 الأوامر المتاحة:</b>
+            help_text = """<b>📋 الأوامر المتاحة:</b>
 /status - حالة البوت
 /balance - رصيد المحفظة
 /trades - الصفقات المفتوحة
-/help - الأوامر
-            """
+/help - الأوامر"""
             await self.send_message(help_text)
         
         elif text == "/status":
-            await self.send_message(f"✅ البوت يعمل\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            await self.send_message(f"✅ <b>البوت يعمل</b>\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
         elif text == "/balance":
             try:
                 from solana_rpc import get_wallet_balance
                 balance = await get_wallet_balance()
-                await self.send_message(f"💰 الرصيد: {balance:.4f} SOL")
+                await self.send_message(f"💰 <b>الرصيد:</b> {balance:.4f} SOL")
             except Exception as e:
-                await self.send_message(f"❌ خطأ: {e}")
+                await self.send_message(f"❌ خطأ: {str(e)[:50]}")
         
         elif text == "/trades":
             try:
                 from db.trades import get_open_trades
                 trades = await get_open_trades()
-                msg = f"📊 الصفقات المفتوحة: {len(trades)}\n"
+                msg = f"📊 <b>الصفقات المفتوحة:</b> {len(trades)}\n"
                 for t in trades[:5]:
                     msg += f"• {t.get('symbol', '?')}\n"
+                if len(trades) > 5:
+                    msg += f"... و {len(trades)-5} صفقات أخرى"
                 await self.send_message(msg)
             except Exception as e:
-                await self.send_message(f"❌ خطأ: {e}")
+                await self.send_message(f"❌ خطأ: {str(e)[:50]}")
+        
+        else:
+            await self.send_message("❓ أمر غير معروف. استخدم /help")
     
     async def run(self):
         """حلقة استقبال الأوامر"""
         logger.info("🤖 بدء بوت التلجرام...")
+        await self.send_message("🤖 <b>البوت عاد للتشغيل</b>")
+        
         while True:
             try:
                 updates = await self.get_updates()
@@ -112,7 +122,7 @@ class TelegramBot:
 
 
 # ============================================================================
-# 🔄 RECOVERY STARTUP - إغلاق الصفقات القديمة وطباعة المحفظة
+# 🔄 RECOVERY STARTUP
 # ============================================================================
 
 async def recovery_startup():
@@ -125,18 +135,19 @@ async def recovery_startup():
         logger.info("💰 بيانات المحفظة:")
         from solana_rpc import get_wallet_balance
         balance = await get_wallet_balance()
-        logger.info(f"   الرصيد الحالي: {balance:.4f} SOL")
+        logger.info(f"   ✅ الرصيد الحالي: {balance:.4f} SOL\n")
     except Exception as e:
-        logger.error(f"❌ خطأ في جلب المحفظة: {e}")
+        logger.error(f"❌ خطأ في جلب المحفظة: {e}\n")
     
     try:
         from db.trades import get_open_trades
         open_trades = await get_open_trades()
-        logger.info(f"📊 الصفقات المفتوحة: {len(open_trades)}")
+        logger.info(f"📊 الصفقات المفتوحة: {len(open_trades)}\n")
+        if open_trades:
+            for trade in open_trades[:3]:
+                logger.info(f"   • {trade.get('symbol', '?')} @ {trade.get('entry_price', 0)}\n")
     except Exception as e:
-        logger.error(f"❌ خطأ: {e}")
-    
-    logger.info("")
+        logger.error(f"❌ خطأ: {e}\n")
 
 
 # ============================================================================
