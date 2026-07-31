@@ -5,14 +5,15 @@
 التحديثات:
 ✅ max_dev_wallet_pct: 8% → 15% (استراتيجية التوازن)
 ✅ monitor_interval: 10s → 0.5s (مراقبة سريعة)
-✅ إضافة DEX_ALLOWLIST (مفقود!)
+✅ إضافة DEX_ALLOWLIST
 ✅ إضافة كشف الانهيارات
-✅ إضافة USE_DEVNET للتمييز بين التطوير والإنتاج
-✅ إضافة جميع مفاتيح API والإعدادات الناقصة
+✅ إضافة جميع مفاتيح API الناقصة
+✅ إضافة FILTERS و MOMENTUM dataclasses
 """
 
 import os
 from typing import Dict, List
+from dataclasses import dataclass
 
 # ──────────────────────────────────────────────────────────────
 # الشبكة والـ RPC
@@ -48,7 +49,7 @@ PUMPPORTAL_WEBSOCKET = os.getenv("PUMPPORTAL_WEBSOCKET", "wss://pumpportal.fun/a
 PUMPFUN_URL = "https://pump.fun"
 
 # ──────────────────────────────────────────────────────────────
-# 🔥 قائمة DEX المسموح بها
+# قائمة DEX المسموح بها
 # ──────────────────────────────────────────────────────────────
 
 DEX_ALLOWLIST: List[str] = [
@@ -63,59 +64,53 @@ DEX_ALLOWLIST: List[str] = [
 # فلاتر الأمان (الاستراتيجية #1 - التوازن)
 # ──────────────────────────────────────────────────────────────
 
-# 🔥 تم تحديثه: 8% → 15% (استراتيجية التوازن)
-MAX_DEV_WALLET_PCT = 15.0  # الحد الأقصى لأكبر محفظة
-
-# فلاتر إضافية
-MIN_POOL_SIZE_SOL = 50000.0  # الحد الأدنى للسيولة
-MIN_POOL_SIZE_USD = 500000.0  # الحد الأدنى بالدولار
-MAX_TOKEN_AGE_MINUTES = 5  # أقصى عمر للعملة (دقائق)
-MIN_TX_COUNT = 10  # الحد الأدنى للمعاملات
-BANNED_NAMES = ["USWR"]  # أسماء محظورة
+MAX_DEV_WALLET_PCT = 15.0
+MIN_POOL_SIZE_SOL = 50000.0
+MIN_POOL_SIZE_USD = 500000.0
+MAX_TOKEN_AGE_MINUTES = 5
+MIN_TX_COUNT = 10
+BANNED_NAMES = ["USWR"]
 
 # ──────────────────────────────────────────────────────────────
 # معايير التداول
 # ──────────────────────────────────────────────────────────────
 
-CAPITAL_PER_TRADE_SOL = 0.05  # رأس المال لكل صفقة
-MAX_TRADES_OPEN = 5  # الحد الأقصى للصفقات المفتوحة
-TAKE_PROFIT_FIRST_PCT = 2.0  # هدف الربح الأول
-STOP_LOSS_PCT = -30.0  # وقف الخسارة
+CAPITAL_PER_TRADE_SOL = 0.05
+MAX_TRADES_OPEN = 5
+TAKE_PROFIT_FIRST_PCT = 2.0
+STOP_LOSS_PCT = -30.0
 
 # ──────────────────────────────────────────────────────────────
-# المراقبة والخروج (محسّنة)
+# المراقبة والخروج
 # ──────────────────────────────────────────────────────────────
 
-# 🔥 تم تحديثه: 10 ثوانٍ → 0.5 ثانية (مراقبة سريعة جداً)
-MONITOR_INTERVAL_SECONDS = 0.5  # فترة المراقبة
-
-# كشف الانهيارات
-CRASH_DETECTION_ENABLED = True  # تفعيل كشف الانهيارات
-CRASH_THRESHOLD_PCT = -50.0  # انخفاض 50% = انهيار
-LIQUIDITY_CRASH_PCT = -50.0  # انهيار السيولة
+MONITOR_INTERVAL_SECONDS = 0.5
+CRASH_DETECTION_ENABLED = True
+CRASH_THRESHOLD_PCT = -50.0
+LIQUIDITY_CRASH_PCT = -50.0
 
 # ──────────────────────────────────────────────────────────────
 # الإعدادات المتقدمة
 # ──────────────────────────────────────────────────────────────
 
-GAS_LIMIT = 1000000  # حد الـ Gas
-SLIPPAGE_TOLERANCE_PCT = 10.0  # تفاوت الانزلاق
-PRIORITY_FEE_LAMPORTS = 100000  # رسم الأولوية
+GAS_LIMIT = 1000000
+SLIPPAGE_TOLERANCE_PCT = 10.0
+PRIORITY_FEE_LAMPORTS = 100000
 
-BATCH_EXIT_ENABLED = True  # تفعيل البيع المتعدد الدفعات
-BATCH_SIZES = [0.2, 0.3, 0.5]  # حجم الدفعات (نسب مئوية)
+BATCH_EXIT_ENABLED = True
+BATCH_SIZES = [0.2, 0.3, 0.5]
 
-RETRY_ON_FAILURE = True  # إعادة المحاولة عند الفشل
-MAX_RETRIES = 4  # أقصى عدد محاولات
-RETRY_DELAY_SEC = 0.1  # تأخير إعادة المحاولة
+RETRY_ON_FAILURE = True
+MAX_RETRIES = 4
+RETRY_DELAY_SEC = 0.1
 
 # ──────────────────────────────────────────────────────────────
 # التقارير والـ Logs
 # ──────────────────────────────────────────────────────────────
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
-ENABLE_DETAILED_LOGS = True  # logs مفصلة
-DAILY_REPORT_TIME = "23:00"  # وقت التقرير اليومي
+ENABLE_DETAILED_LOGS = True
+DAILY_REPORT_TIME = "23:00"
 
 # ──────────────────────────────────────────────────────────────
 # نمط التطوير مقابل الإنتاج
@@ -127,10 +122,8 @@ USE_DEVNET = os.getenv("USE_DEVNET", "true").lower() == "true"
 # مفاتيح API والنقاط النهائية
 # ──────────────────────────────────────────────────────────────
 
-# RPC
 PRIMARY_RPC_URL = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
 
-# APIs
 PUMPPORTAL_API_KEY = os.getenv("PUMPPORTAL_API_KEY", "")
 JUPITER_API_KEY = os.getenv("JUPITER_API_KEY", "")
 JUPITER_API_BASE = os.getenv("JUPITER_API_BASE", "https://quote-api.jup.ag/v6")
@@ -147,44 +140,71 @@ TATUM_SOLANA_RPC_URL = os.getenv("TATUM_SOLANA_RPC_URL", "")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
 
-# التنبيهات
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+GOPLUS_API_BASE = os.getenv("GOPLUS_API_BASE", "https://api.gopluslabs.io")
+GOPLUS_APP_KEY = os.getenv("GOPLUS_APP_KEY", "")
+GOPLUS_APP_SECRET = os.getenv("GOPLUS_APP_SECRET", "")
+
+DEXSCREENER_API_BASE = os.getenv("DEXSCREENER_API_BASE", "https://api.dexscreener.com/latest")
+BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY", "")
+BIRDEYE_API_BASE = os.getenv("BIRDEYE_API_BASE", "https://public-api.birdeye.so")
+
+# ──────────────────────────────────────────────────────────────
+# إعدادات الفلاتر
+# ──────────────────────────────────────────────────────────────
+
+@dataclass
+class FilterConfig:
+    """إعدادات الفلاتر والعتبات الأمنية"""
+    max_allowed_prior_rugs: int = 2
+    min_security_score: float = 50.0
+
+FILTERS = FilterConfig()
+
+
+@dataclass
+class MomentumConfig:
+    """إعدادات فحص الزخم"""
+    min_liquidity_usd: float = 50000.0
+    max_marketcap_to_liquidity_ratio: float = 10.0
+    min_price_change_m5_pct: float = 2.0
+    max_price_change_m5_pct: float = 50.0
+    min_volume_m5_usd: float = 10000.0
+    min_unique_buys_m5: int = 10
+    min_buy_sell_ratio_m5: float = 1.5
+
+MOMENTUM = MomentumConfig()
 
 # ──────────────────────────────────────────────────────────────
 # استراتيجية الخروج والـ Watchlist
 # ──────────────────────────────────────────────────────────────
 
-# مسارات الانتظار
-EXIT_STRATEGY = "multi_batch"  # أو "aggressive", "conservative"
-WATCHLIST = True  # تفعيل قائمة الانتظار
-FAST_TRACK = True  # تفعيل المسار السريع للعملات الجديدة
+EXIT_STRATEGY = "multi_batch"
+WATCHLIST = True
+FAST_TRACK = True
 
-# مؤشرات الزخم (Momentum)
-HOLDER_VELOCITY = 5  # عدد الحاملين الجدد في الدقيقة
-SUSTAINED_TREND = 3  # عدد فترات المراقبة المتتالية برصيد إيجابي
-GRADUATION_PROXIMITY = 0.8  # نسبة قرب التخرج من pump.fun
+HOLDER_VELOCITY = 5
+SUSTAINED_TREND = 3
+GRADUATION_PROXIMITY = 0.8
 
-# معايير Safety Entry
-RUGCHECK_MAX_SCORE = 5  # الحد الأقصى لـ rug check score
-RUGCHECK_MAX_INSIDERS = 3  # الحد الأقصى للمطورين المشبوهين
-ESTABLISHED_LIQUID = 100000.0  # السيولة المعتبرة "ثابتة" (USD)
+RUGCHECK_MAX_SCORE = 5
+RUGCHECK_MAX_INSIDERS = 3
+ESTABLISHED_LIQUID = 100000.0
 
-# معايير GMGN
-GMGN_MAX_RAT_TRADER_PCT = 10.0  # الحد الأقصى لنسبة المتاجرين الفئران
-GMGN_MAX_BUNDLER_PCT = 5.0  # الحد الأقصى لنسبة المجمّعات
-GMGN_MAX_RUG_RATIO = 0.15  # الحد الأقصى لنسبة الـ rug
+GMGN_MAX_RAT_TRADER_PCT = 10.0
+GMGN_MAX_BUNDLER_PCT = 5.0
+GMGN_MAX_RUG_RATIO = 0.15
 
-# قائمة الحظر (Symbol Blocklist)
-SYMBOL_BLOCKLIST_LOSS_THRESHOLD_PCT = -50.0  # خسارة 50% = حظر الرمز
-SYMBOL_BLOCKLIST_MAX_OCCURRENCES = 3  # حظر بعد 3 مرات خسارة
+SYMBOL_BLOCKLIST_LOSS_THRESHOLD_PCT = -50.0
+SYMBOL_BLOCKLIST_MAX_OCCURRENCES = 3
 
 # ──────────────────────────────────────────────────────────────
 # حالة التطبيق
 # ──────────────────────────────────────────────────────────────
 
-# 📋 ملخص الإعدادات الحالية
-TRADING_MODE = "PRODUCTION"  # أو SANDBOX
+TRADING_MODE = "PRODUCTION"
 VERSION = "2.0-ENHANCED"
 
 CONFIG_SUMMARY = {
